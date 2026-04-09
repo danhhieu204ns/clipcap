@@ -26,6 +26,7 @@ def parse_token_file(captions_file: str) -> Dict[str, List[str]]:
     Parse Flickr30k token file formats:
     1) image_name#idx<TAB>caption
     2) image_name| idx | caption
+    Always extract only the image filename (before | or #) for image lookup.
     """
     image_to_captions: Dict[str, List[str]] = {}
     with open(captions_file, 'r', encoding='utf-8') as f:
@@ -35,12 +36,13 @@ def parse_token_file(captions_file: str) -> Dict[str, List[str]]:
                 continue
             if '\t' in line:
                 key, caption = line.split('\t', 1)
-                image_name = key.split('#', 1)[0].strip()
+                # Support both # and | in key
+                image_name = key.split('|', 1)[0].split('#', 1)[0].strip()
             elif '|' in line:
                 parts = [part.strip() for part in line.split('|')]
                 if len(parts) < 3:
                     continue
-                image_name = parts[0]
+                image_name = parts[0].split('#', 1)[0].strip()
                 caption = parts[2]
             else:
                 continue
@@ -52,7 +54,7 @@ def parse_token_file(captions_file: str) -> Dict[str, List[str]]:
     return image_to_captions
 
 
-def parse_karpathy_json(karpathy_json: str) -> Dict[str, List[str]]:
+def parse_karpathy_json(karpathy_json: str, split: str = 'all') -> Dict[str, List[str]]:
     """
     Parse Karpathy split JSON format (dataset_flickr30k.json).
     """
@@ -62,6 +64,9 @@ def parse_karpathy_json(karpathy_json: str) -> Dict[str, List[str]]:
     images = data.get('images', [])
     image_to_captions: Dict[str, List[str]] = {}
     for item in images:
+        item_split = item.get('split', '')
+        if split != 'all' and item_split != split:
+            continue
         image_name = item.get('filename')
         if not image_name:
             continue
@@ -126,14 +131,17 @@ def main():
     parser.add_argument('--images_dir', default='./data/flickr30k/flickr30k-images')
     parser.add_argument('--captions_file', default='./data/flickr30k/results_20130124.token')
     parser.add_argument('--karpathy_json', default='')
+    parser.add_argument('--split', default='all', choices=('all', 'train', 'val', 'test'))
     parser.add_argument('--out_path', default='')
     parser.add_argument('--clip_model_type', default='ViT-B/32', choices=('RN50', 'RN101', 'RN50x4', 'ViT-B/32'))
     parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     args = parser.parse_args()
 
     if args.karpathy_json:
-        captions_map = parse_karpathy_json(args.karpathy_json)
+        captions_map = parse_karpathy_json(args.karpathy_json, split=args.split)
     else:
+        if args.split != 'all':
+            raise ValueError('--split requires --karpathy_json because token files do not include split labels')
         captions_map = parse_token_file(args.captions_file)
 
     samples = collect_samples(captions_map, args.images_dir)
@@ -144,7 +152,12 @@ def main():
     clip_embeddings, captions = encode_images(samples, args.images_dir, args.clip_model_type, device)
 
     clip_model_name = args.clip_model_type.replace('/', '_')
-    out_path = args.out_path or os.path.join(args.data_root, f'flickr30k_clip_{clip_model_name}.pkl')
+    if args.out_path:
+        out_path = args.out_path
+    elif args.split == 'all':
+        out_path = os.path.join(args.data_root, f'flickr30k_clip_{clip_model_name}.pkl')
+    else:
+        out_path = os.path.join(args.data_root, f'flickr30k_clip_{clip_model_name}_{args.split}.pkl')
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
     with open(out_path, 'wb') as f:

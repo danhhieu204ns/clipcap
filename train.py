@@ -3,7 +3,8 @@ import torch.nn as nn
 from torch.nn import functional as nnf
 from torch.utils.data import Dataset, DataLoader
 from enum import Enum
-from transformers import GPT2Tokenizer, GPT2LMHeadModel, AdamW, get_linear_schedule_with_warmup
+from transformers import GPT2Tokenizer, GPT2LMHeadModel, get_linear_schedule_with_warmup
+from torch.optim import AdamW
 from tqdm import tqdm
 import os
 import pickle

@@ -94,12 +94,41 @@ Both [COCO](https://drive.google.com/file/d/1IdaBtMSvtyzF0ByVaBHtvM0JYSXRExRX/vi
 
 ## Training prerequisites
 
-[comment]: <> (Dependencies can be found at the [Inference notebook]&#40;https://colab.research.google.com/drive/1tuoAC5F4sC7qid56Z0ap-stR3rwdk0ZV?usp=sharing&#41; )
+[comment]: <> (Dependencies can be found at the [Inference notebook](https://colab.research.google.com/drive/1tuoAC5F4sC7qid56Z0ap-stR3rwdk0ZV?usp=sharing) )
 Clone, create environment and install dependencies:  
 ```
 git clone https://github.com/rmokady/CLIP_prefix_caption && cd CLIP_prefix_caption
 conda env create -f environment.yml
 conda activate clip_prefix_caption
+```
+
+pip install transformers torch numpy pillow scikit-image git+https://github.com/openai/CLIP.git
+
+python parse_flickr30k.py --clip_model_type ViT-B/32 --images_dir ./flickr30k_images/flickr30k_images --captions_file ./flickr30k_images/results.csv
+
+Recommended for train/test split (Karpathy JSON):
+python parse_flickr30k.py --clip_model_type ViT-B/32 --images_dir ./data/flickr30k/flickr30k-images --karpathy_json ./data/flickr30k/dataset_flickr30k.json --split train
+
+## Training Modes
+
+You can train the model in 3 different modes by adjusting the `--mapping_type` and `--only_prefix` arguments:
+
+**1. Mode MLP (MLP mapper + GPT-2 not fine-tuned)**
+Train only the MLP mapping network while keeping GPT-2 frozen:
+```bash
+python train.py --data ./data/flickr30k/flickr30k_clip_ViT-B_32_train.pkl --out_dir ./checkpoints/flickr30k_mlp --prefix flickr30k_mlp --mapping_type mlp --only_prefix
+```
+
+**2. Mode Transformer + GPT-2 frozen (Transformer mapper + GPT-2 not fine-tuned)**
+Train only the Transformer mapping network while keeping GPT-2 frozen:
+```bash
+python train.py --data ./data/flickr30k/flickr30k_clip_ViT-B_32_train.pkl --out_dir ./checkpoints/flickr30k_transformer_frozen --prefix flickr30k_transformer_frozen --mapping_type transformer --only_prefix
+```
+
+**3. Mode Transformer + GPT-2 fine-tuned (Transformer mapper + GPT-2 fine-tuned)**
+Train both the Transformer mapping network and fine-tune the GPT-2 language model:
+```bash
+python train.py --data ./data/flickr30k/flickr30k_clip_ViT-B_32_train.pkl --out_dir ./checkpoints/flickr30k_transformer_finetune --prefix flickr30k_transformer_finetune --mapping_type transformer
 ```
 
 ## COCO training
@@ -165,15 +194,97 @@ If you use Karpathy JSON (`dataset_flickr30k.json`), run:
 python parse_flickr30k.py --clip_model_type ViT-B/32 --images_dir ./data/flickr30k/flickr30k-images --karpathy_json ./data/flickr30k/dataset_flickr30k.json
 ```
 
+To create explicit train/val/test files (recommended for fair evaluation), run:
+```
+python parse_flickr30k.py --clip_model_type ViT-B/32 --images_dir ./data/flickr30k/flickr30k-images --karpathy_json ./data/flickr30k/dataset_flickr30k.json --split train
+python parse_flickr30k.py --clip_model_type ViT-B/32 --images_dir ./data/flickr30k/flickr30k-images --karpathy_json ./data/flickr30k/dataset_flickr30k.json --split val
+python parse_flickr30k.py --clip_model_type ViT-B/32 --images_dir ./data/flickr30k/flickr30k-images --karpathy_json ./data/flickr30k/dataset_flickr30k.json --split test
+```
+
+If you only have `results.csv` (no Karpathy JSON), use deterministic image-level split first:
+```
+python split_flickr30k_captions.py --captions_file ./flickr30k_images/results.csv --out_dir ./data/flickr30k --train_ratio 0.8 --val_ratio 0.1 --test_ratio 0.1 --seed 42
+```
+
+Then parse each split to CLIP embeddings:
+```
+python parse_flickr30k.py --clip_model_type ViT-B/32 --images_dir ./flickr30k_images/flickr30k_images --captions_file ./data/flickr30k/results_train.csv --out_path ./data/flickr30k/flickr30k_clip_ViT-B_32_train.pkl
+python parse_flickr30k.py --clip_model_type ViT-B/32 --images_dir ./flickr30k_images/flickr30k_images --captions_file ./data/flickr30k/results_val.csv --out_path ./data/flickr30k/flickr30k_clip_ViT-B_32_val.pkl
+python parse_flickr30k.py --clip_model_type ViT-B/32 --images_dir ./flickr30k_images/flickr30k_images --captions_file ./data/flickr30k/results_test.csv --out_path ./data/flickr30k/flickr30k_clip_ViT-B_32_test.pkl
+```
+
+These commands generate:
+- `data/flickr30k/flickr30k_clip_ViT-B_32_train.pkl`
+- `data/flickr30k/flickr30k_clip_ViT-B_32_val.pkl`
+- `data/flickr30k/flickr30k_clip_ViT-B_32_test.pkl`
+
+### Cách split và train/test (khuyến nghị)
+
+1. Tạo train/val/test bằng Karpathy split:
+```
+python parse_flickr30k.py --clip_model_type ViT-B/32 --images_dir ./data/flickr30k/flickr30k-images --karpathy_json ./data/flickr30k/dataset_flickr30k.json --split train
+python parse_flickr30k.py --clip_model_type ViT-B/32 --images_dir ./data/flickr30k/flickr30k-images --karpathy_json ./data/flickr30k/dataset_flickr30k.json --split val
+python parse_flickr30k.py --clip_model_type ViT-B/32 --images_dir ./data/flickr30k/flickr30k-images --karpathy_json ./data/flickr30k/dataset_flickr30k.json --split test
+```
+
+2. Train chỉ với train split:
+```
+python train.py --data ./data/flickr30k/flickr30k_clip_ViT-B_32_train.pkl --out_dir ./checkpoints/flickr30k_transformer_finetune --prefix flickr30k_transformer_finetune --mapping_type transformer
+```
+
+3. Dùng val split để chọn epoch (tùy chọn):
+```
+python evaluate.py --data ./data/flickr30k/flickr30k_clip_ViT-B_32_val.pkl --checkpoint ./checkpoints/flickr30k_transformer_finetune/flickr30k_transformer_finetune-009.pt --mapping_type transformer --prefix_length 10 --prefix_length_clip 10 --num_layers 8 --decode beam --beam_size 5
+```
+
+4. Báo cáo kết quả cuối trên test split:
+```
+python evaluate.py --data ./data/flickr30k/flickr30k_clip_ViT-B_32_test.pkl --checkpoint ./checkpoints/flickr30k_transformer_finetune/flickr30k_transformer_finetune-009.pt --mapping_type transformer --prefix_length 10 --prefix_length_clip 10 --num_layers 8 --decode beam --beam_size 5 --save_predictions ./checkpoints/flickr30k_transformer_finetune/eval_results.json
+```
+
 Train with fine-tuning of GPT2:
 ```
-python train.py --data ./data/flickr30k/flickr30k_clip_ViT-B_32.pkl --out_dir ./flickr30k_train/ --prefix flickr30k_prefix
+python train.py --data ./data/flickr30k/flickr30k_clip_ViT-B_32_train.pkl --out_dir ./flickr30k_train/ --prefix flickr30k_prefix
 ```
 
 Train only transformer mapping network:
 ```
-python train.py --only_prefix --data ./data/flickr30k/flickr30k_clip_ViT-B_32.pkl --out_dir ./flickr30k_train/ --prefix flickr30k_prefix --mapping_type transformer --num_layers 8 --prefix_length 40 --prefix_length_clip 40
+python train.py --only_prefix --data ./data/flickr30k/flickr30k_clip_ViT-B_32_train.pkl --out_dir ./flickr30k_train/ --prefix flickr30k_prefix --mapping_type transformer --num_layers 8 --prefix_length 40 --prefix_length_clip 40
 ```
+
+## Evaluation (paper metrics)
+
+Evaluate a trained checkpoint with COCO-style captioning metrics used in the ClipCap paper:
+- BLEU-1/2/3/4
+- METEOR
+- ROUGE-L
+- CIDEr
+- SPICE
+
+Install evaluation dependencies:
+```
+pip install pycocoevalcap pycocotools
+```
+
+Run evaluation for transformer mapping + GPT-2 fine-tuned:
+```
+python evaluate.py --data ./data/flickr30k/flickr30k_clip_ViT-B_32_test.pkl --checkpoint ./checkpoints/flickr30k_transformer_finetune/flickr30k_transformer_finetune-009.pt --mapping_type transformer --prefix_length 10 --prefix_length_clip 10 --num_layers 8 --decode beam --beam_size 5 --save_predictions ./checkpoints/flickr30k_transformer_finetune/eval_results.json
+```
+
+Run evaluation for MLP mapping (GPT-2 frozen):
+```
+python evaluate.py --data ./data/flickr30k/flickr30k_clip_ViT-B_32_test.pkl --checkpoint ./checkpoints/flickr30k_mlp/flickr30k_mlp-009.pt --mapping_type mlp --only_prefix --prefix_length 10 --decode beam --beam_size 5 --save_predictions ./checkpoints/flickr30k_mlp/eval_results.json
+```
+
+Run evaluation for transformer mapping (GPT-2 frozen):
+```
+python evaluate.py --data ./data/flickr30k/flickr30k_clip_ViT-B_32_test.pkl --checkpoint ./checkpoints/flickr30k_transformer_frozen/flickr30k_transformer_frozen-009.pt --mapping_type transformer --only_prefix --prefix_length 10 --prefix_length_clip 10 --num_layers 8 --decode beam --beam_size 5 --save_predictions ./checkpoints/flickr30k_transformer_frozen/eval_results.json
+```
+
+Notes:
+- Add `--normalize_prefix` if your model was trained with `--normalize_prefix`.
+- Use `--max_samples N` for quick checks on a subset before full evaluation.
+- You can switch decoding with `--decode nucleus --top_p 0.8`.
 
 ## Citation
 If you use this code for your research, please cite:
