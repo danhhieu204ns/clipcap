@@ -328,25 +328,50 @@ Notes:
 - Use `--max_samples N` for quick checks on a subset before full evaluation.
 - You can switch decoding with `--decode nucleus --top_p 0.8`.
 
-## Citation
-If you use this code for your research, please cite:
+## Visualization for Experiments (Grad-CAM and Patch-CAM)
+
+Use `visualize_captioning.py` to generate qualitative visualizations for your 4 experiment settings.
+
+Install extra dependency:
 ```
-@article{mokady2021clipcap,
-  title={ClipCap: CLIP Prefix for Image Captioning},
-  author={Mokady, Ron and Hertz, Amir and Bermano, Amit H},
-  journal={arXiv preprint arXiv:2111.09734},
-  year={2021}
-}
+pip install matplotlib
 ```
 
+Output files are written to `--out_dir`:
+- `*_summary.json`: caption and metadata
+- `*_input.png`: input image (clipcap mode)
+- `*_gradcam.png`: Grad-CAM figure (cnn_rnn mode)
+- `*_clip_patch_cam.png`: ClipCap spatial heatmap overlay (patch-CAM)
 
+Notes:
+- For clipcap mode, patch-CAM target text defaults to generated caption.
+- You can override patch-CAM target text with `--clip_spatial_text "your phrase"`.
+- Patch-CAM inversion is enabled by default so high relevance appears red. Disable with `--no_clip_patch_cam_invert`.
 
+### 1) Baseline CNN-RNN (Grad-CAM on last Conv layer)
 
-## Acknowledgments
-This repository is heavily based on [CLIP](https://github.com/openai/CLIP) and [Hugging-faces](https://github.com/huggingface/transformers) repositories.
-For training we used the data of [COCO dataset](https://cocodataset.org/#home) and [Conceptual Captions](https://ai.google.com/research/ConceptualCaptions/).
+```
+python visualize_captioning.py --model_arch cnn_rnn --image ./Images/img.jpg --checkpoint ./checkpoints/cnn_rnn/flickr30k_cnn_rnn-014.pt --out_dir ./visualizations --output_prefix cnn_rnn
+```
 
-## Contact
-For any inquiry please contact us at our email addresses: ron.mokady@gmail.com or amirhertz@mail.tau.ac.il.
+### 2) CLIP + MLP + GPT-2
 
+```
+python visualize_captioning.py --model_arch clipcap --image ./Images/img.jpg --checkpoint ./checkpoints/flickr30k_mlp/flickr30k_mlp-009.pt --mapping_type mlp --only_prefix --prefix_length 10 --out_dir ./visualizations --output_prefix clip_mlp
+```
 
+### 3) CLIP + Transformer + GPT-2 (GPT-2 frozen)
+
+```
+python visualize_captioning.py --model_arch clipcap --image ./Images/img.jpg --checkpoint ./checkpoints/flickr30k_transformer_frozen/flickr30k_transformer_frozen-009.pt --mapping_type transformer --only_prefix --prefix_length 10 --prefix_length_clip 10 --num_layers 8 --out_dir ./visualizations --output_prefix clip_transformer_frozen
+```
+
+### 4) CLIP + Transformer + GPT-2 fine-tune
+
+```
+python visualize_captioning.py --model_arch clipcap --image ./Images/img.jpg --checkpoint ./checkpoints/flickr30k_transformer_finetune/flickr30k_transformer_finetune-009.pt --mapping_type transformer --prefix_length 10 --prefix_length_clip 10 --num_layers 8 --out_dir ./visualizations --output_prefix clip_transformer_finetune
+```
+
+Recommended interpretation:
+- CNN-RNN baseline: focus on `*_gradcam.png` (spatial evidence from ResNet final conv features).
+- CLIP variants (MLP/Transformer): focus on `*_clip_patch_cam.png` for spatial evidence.

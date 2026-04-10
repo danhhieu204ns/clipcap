@@ -1,0 +1,22 @@
+{
+  "model_arch": "cnn_rnn",
+  "caption": "a small dog jumping to catch a tennis ball in a grassy field .",
+  "token_ids": [
+    44,
+    5528,
+    1834,
+    3205,
+    6263,
+    1048,
+    44,
+    6167,
+    418,
+    3040,
+    44,
+    2664,
+    2256,
+    6,
+    3
+  ],
+  "gradcam_png": "./visualizations\\cnn_rnn_gradcam.png"
+}
