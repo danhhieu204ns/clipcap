@@ -6,10 +6,34 @@ from collections import OrderedDict
 from typing import Dict, List, Tuple
 
 import torch
+from PIL import Image
 from tqdm import tqdm
 from transformers import GPT2Tokenizer
 
 from train import ClipCaptionModel, ClipCaptionPrefix, MappingType
+
+CNN_RNN_IMPORT_ERROR = None
+try:
+    from train_cnn_rnn import (
+        CNNRNNCaptioner,
+        END_TOKEN,
+        PAD_TOKEN,
+        START_TOKEN,
+        UNK_TOKEN,
+        Vocabulary,
+        parse_karpathy_json,
+        parse_token_file,
+    )
+except ImportError as exc:
+    CNN_RNN_IMPORT_ERROR = exc
+    CNNRNNCaptioner = None
+    Vocabulary = None
+    START_TOKEN = "<start>"
+    END_TOKEN = "<end>"
+    PAD_TOKEN = "<pad>"
+    UNK_TOKEN = "<unk>"
+    parse_karpathy_json = None
+    parse_token_file = None
 
 
 def _normalize_text(text: str) -> str:
@@ -248,9 +272,111 @@ def compute_coco_metrics(references: Dict[str, List[str]], predictions: Dict[str
     return metrics
 
 
+def load_cnn_rnn_eval_data(args: argparse.Namespace) -> Tuple[List[str], Dict[str, List[str]]]:
+    if args.karpathy_json:
+        captions_map = parse_karpathy_json(args.karpathy_json, split=args.split)
+    elif args.captions_file:
+        captions_map = parse_token_file(args.captions_file)
+    else:
+        raise ValueError("For cnn_rnn mode, provide --karpathy_json or --captions_file")
+
+    references: Dict[str, List[str]] = OrderedDict()
+    for image_id, captions in captions_map.items():
+        image_path = os.path.join(args.images_dir, image_id)
+        if not os.path.isfile(image_path):
+            continue
+        references[image_id] = [_normalize_text(caption) for caption in captions]
+
+    image_ids = list(references.keys())
+    if args.max_samples > 0:
+        image_ids = image_ids[: args.max_samples]
+        references = OrderedDict((image_id, references[image_id]) for image_id in image_ids)
+    return image_ids, references
+
+
+def build_cnn_rnn_model(args: argparse.Namespace) -> Tuple[CNNRNNCaptioner, Vocabulary]:
+    try:
+        checkpoint = torch.load(args.checkpoint, map_location=args.device, weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(args.checkpoint, map_location=args.device)
+
+    if "vocab" not in checkpoint:
+        raise ValueError("Checkpoint does not include vocabulary. Re-train with cnn_rnn mode in train.py")
+
+    vocab_data = checkpoint["vocab"]
+    vocab = Vocabulary(stoi=vocab_data["stoi"], itos=vocab_data["itos"])
+    ckpt_args = checkpoint.get("args", {})
+
+    embed_size = int(getattr(args, "embed_size", 0) or ckpt_args.get("embed_size", 512))
+    hidden_size = int(getattr(args, "hidden_size", 0) or ckpt_args.get("hidden_size", 512))
+    rnn_layers = int(getattr(args, "rnn_layers", 0) or ckpt_args.get("rnn_layers", ckpt_args.get("num_layers", 1)))
+    dropout = float(getattr(args, "dropout", 0.0) or ckpt_args.get("dropout", 0.1))
+    unfreeze_cnn = bool(ckpt_args.get("unfreeze_cnn", False))
+
+    model = CNNRNNCaptioner(
+        vocab_size=len(vocab.itos),
+        embed_size=embed_size,
+        hidden_size=hidden_size,
+        num_layers=rnn_layers,
+        freeze_backbone=not unfreeze_cnn,
+        dropout=dropout,
+    )
+    model.load_state_dict(checkpoint["model_state_dict"])
+    return model, vocab
+
+
+def generate_cnn_rnn_caption(
+    model: CNNRNNCaptioner,
+    vocab: Vocabulary,
+    image_tensor: torch.Tensor,
+    device: torch.device,
+    max_len: int,
+    temperature: float,
+) -> str:
+    model.eval()
+    start_idx = vocab.stoi.get(START_TOKEN)
+    end_idx = vocab.stoi.get(END_TOKEN)
+    special_ids = {
+        vocab.stoi.get(PAD_TOKEN, -1),
+        vocab.stoi.get(UNK_TOKEN, -1),
+        start_idx,
+        end_idx,
+    }
+
+    with torch.no_grad():
+        image_features = model.encoder(image_tensor.to(device))
+        batch_size = image_features.size(0)
+
+        h = model.decoder.init_h(image_features).view(batch_size, model.decoder.num_layers, model.decoder.hidden_size)
+        c = model.decoder.init_c(image_features).view(batch_size, model.decoder.num_layers, model.decoder.hidden_size)
+        h = h.transpose(0, 1).contiguous()
+        c = c.transpose(0, 1).contiguous()
+
+        token = torch.tensor([[start_idx]], dtype=torch.long, device=device)
+        output_tokens: List[str] = []
+
+        for _ in range(max_len):
+            embedding = model.decoder.embed(token)
+            out, (h, c) = model.decoder.lstm(embedding, (h, c))
+            logits = model.decoder.fc(out[:, -1, :])
+            if temperature > 0:
+                logits = logits / temperature
+            next_id = int(torch.argmax(logits, dim=-1).item())
+
+            if next_id == end_idx:
+                break
+            if next_id not in special_ids and 0 <= next_id < len(vocab.itos):
+                output_tokens.append(vocab.itos[next_id])
+
+            token = torch.tensor([[next_id]], dtype=torch.long, device=device)
+
+    return _normalize_text(" ".join(output_tokens))
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate ClipCap with COCO-style metrics.")
-    parser.add_argument("--data", required=True, help="Path to dataset .pkl generated by parse scripts")
+    parser = argparse.ArgumentParser(description="Evaluate image captioning models with COCO-style metrics.")
+    parser.add_argument("--model_arch", default="clipcap", choices=["clipcap", "cnn_rnn"])
+    parser.add_argument("--data", default="", help="Path to dataset .pkl generated by parse scripts (clipcap mode)")
     parser.add_argument("--checkpoint", required=True, help="Path to trained model checkpoint (.pt)")
     parser.add_argument("--mapping_type", default="mlp", choices=["mlp", "transformer"])
     parser.add_argument("--only_prefix", action="store_true")
@@ -267,54 +393,113 @@ def main() -> None:
     parser.add_argument("--entry_length", type=int, default=67)
     parser.add_argument("--max_samples", type=int, default=0, help="0 means evaluate all images")
     parser.add_argument("--save_predictions", default="", help="Optional JSON output path")
+
+    parser.add_argument("--images_dir", default="", help="Image folder (cnn_rnn mode)")
+    parser.add_argument("--captions_file", default="", help="Caption token file/csv (cnn_rnn mode)")
+    parser.add_argument("--karpathy_json", default="", help="Karpathy json annotation (cnn_rnn mode)")
+    parser.add_argument("--split", default="test", choices=("all", "train", "val", "test"))
+    parser.add_argument("--cnn_max_len", type=int, default=30)
+    parser.add_argument("--embed_size", type=int, default=0)
+    parser.add_argument("--hidden_size", type=int, default=0)
+    parser.add_argument("--rnn_layers", type=int, default=0)
+    parser.add_argument("--dropout", type=float, default=0.0)
     args = parser.parse_args()
 
     device = torch.device(args.device)
-    tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
-
-    print("Loading dataset...")
-    prefixes, image_ids, references, image_to_embedding = load_eval_data(args.data)
-    if args.max_samples > 0:
-        image_ids = image_ids[: args.max_samples]
-
-    print(f"Unique images for evaluation: {len(image_ids)}")
-    print("Loading model checkpoint...")
-    model = build_model(args).to(device).eval()
 
     predictions: Dict[str, List[str]] = OrderedDict()
     eval_references: Dict[str, List[str]] = OrderedDict()
 
-    for image_id in tqdm(image_ids, desc="Generating captions"):
-        embedding_idx = image_to_embedding[image_id]
-        prefix = prefixes[embedding_idx].unsqueeze(0).to(device, dtype=torch.float32)
+    if args.model_arch == "clipcap":
+        if not args.data:
+            raise ValueError("--data is required in clipcap mode")
 
-        if args.normalize_prefix:
-            prefix = prefix / prefix.norm(2, dim=-1, keepdim=True)
+        tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+        print("Loading dataset...")
+        prefixes, image_ids, references, image_to_embedding = load_eval_data(args.data)
+        if args.max_samples > 0:
+            image_ids = image_ids[: args.max_samples]
 
-        with torch.no_grad():
-            prefix_embed = model.clip_project(prefix).reshape(1, args.prefix_length, -1)
+        print(f"Unique images for evaluation: {len(image_ids)}")
+        print("Loading model checkpoint...")
+        model = build_model(args).to(device).eval()
 
-        if args.decode == "beam":
-            pred_caption = generate_beam(
+        for image_id in tqdm(image_ids, desc="Generating captions"):
+            embedding_idx = image_to_embedding[image_id]
+            prefix = prefixes[embedding_idx].unsqueeze(0).to(device, dtype=torch.float32)
+
+            if args.normalize_prefix:
+                prefix = prefix / prefix.norm(2, dim=-1, keepdim=True)
+
+            with torch.no_grad():
+                prefix_embed = model.clip_project(prefix).reshape(1, args.prefix_length, -1)
+
+            if args.decode == "beam":
+                pred_caption = generate_beam(
+                    model=model,
+                    tokenizer=tokenizer,
+                    beam_size=args.beam_size,
+                    embed=prefix_embed,
+                    entry_length=args.entry_length,
+                    temperature=args.temperature,
+                )
+            else:
+                pred_caption = generate_nucleus(
+                    model=model,
+                    tokenizer=tokenizer,
+                    embed=prefix_embed,
+                    entry_length=args.entry_length,
+                    top_p=args.top_p,
+                    temperature=args.temperature,
+                )
+
+            predictions[image_id] = [pred_caption]
+            eval_references[image_id] = references[image_id]
+    else:
+        if CNN_RNN_IMPORT_ERROR is not None:
+            raise ImportError(
+                "cnn_rnn mode requires torchvision/PIL dependencies. Install with: pip install torchvision pillow tqdm"
+            ) from CNN_RNN_IMPORT_ERROR
+
+        if not args.images_dir:
+            raise ValueError("--images_dir is required in cnn_rnn mode")
+
+        print("Loading annotations...")
+        image_ids, eval_references = load_cnn_rnn_eval_data(args)
+        print(f"Unique images for evaluation: {len(image_ids)}")
+
+        print("Loading model checkpoint...")
+        model, vocab = build_cnn_rnn_model(args)
+        model = model.to(device).eval()
+
+        try:
+            from torchvision import transforms as tv_transforms
+        except ImportError as exc:
+            raise ImportError("torchvision is required for cnn_rnn mode. Install with: pip install torchvision") from exc
+
+        image_transform = tv_transforms.Compose(
+            [
+                tv_transforms.Resize(256),
+                tv_transforms.CenterCrop(224),
+                tv_transforms.ToTensor(),
+                tv_transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ]
+        )
+
+        for image_id in tqdm(image_ids, desc="Generating captions"):
+            image_path = os.path.join(args.images_dir, image_id)
+            image = Image.open(image_path).convert("RGB")
+            image_tensor = image_transform(image).unsqueeze(0)
+
+            pred_caption = generate_cnn_rnn_caption(
                 model=model,
-                tokenizer=tokenizer,
-                beam_size=args.beam_size,
-                embed=prefix_embed,
-                entry_length=args.entry_length,
+                vocab=vocab,
+                image_tensor=image_tensor,
+                device=device,
+                max_len=args.cnn_max_len,
                 temperature=args.temperature,
             )
-        else:
-            pred_caption = generate_nucleus(
-                model=model,
-                tokenizer=tokenizer,
-                embed=prefix_embed,
-                entry_length=args.entry_length,
-                top_p=args.top_p,
-                temperature=args.temperature,
-            )
-
-        predictions[image_id] = [pred_caption]
-        eval_references[image_id] = references[image_id]
+            predictions[image_id] = [pred_caption]
 
     print("Computing metrics...")
     metrics = compute_coco_metrics(eval_references, predictions)

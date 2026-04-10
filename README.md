@@ -254,7 +254,9 @@ python train.py --only_prefix --data ./data/flickr30k/flickr30k_clip_ViT-B_32_tr
 
 ## CNN-RNN Training (Flickr30k)
 
-This repository now includes a standalone CNN-RNN training script:
+CNN-RNN is integrated directly into existing scripts (`train.py`, `predict.py`, `evaluate.py`) via `--model_arch cnn_rnn`.
+
+Model:
 - Encoder: ResNet-50 (torchvision)
 - Decoder: LSTM language model
 
@@ -265,12 +267,12 @@ pip install torchvision pillow tqdm
 
 Train from token file (`results_20130124.token` or split CSV):
 ```
-python train_cnn_rnn.py --images_dir ./data/flickr30k/flickr30k-images --captions_file ./data/flickr30k/results_20130124.token --out_dir ./checkpoints/cnn_rnn --prefix flickr30k_cnn_rnn --epochs 15 --batch_size 64
+python train.py --model_arch cnn_rnn --images_dir ./data/flickr30k/flickr30k-images --captions_file ./data/flickr30k/results_20130124.token --out_dir ./checkpoints/cnn_rnn --prefix flickr30k_cnn_rnn --epochs 15 --batch_size 64
 ```
 
 Train from Karpathy JSON split:
 ```
-python train_cnn_rnn.py --images_dir ./data/flickr30k/flickr30k-images --karpathy_json ./data/flickr30k/dataset_flickr30k.json --split train --out_dir ./checkpoints/cnn_rnn --prefix flickr30k_cnn_rnn --epochs 15 --batch_size 64
+python train.py --model_arch cnn_rnn --images_dir ./data/flickr30k/flickr30k-images --karpathy_json ./data/flickr30k/dataset_flickr30k.json --split train --out_dir ./checkpoints/cnn_rnn --prefix flickr30k_cnn_rnn --epochs 15 --batch_size 64
 ```
 
 Useful options:
@@ -279,6 +281,18 @@ Useful options:
 - `--max_tokens`: max caption length used for training.
 
 Checkpoints are saved to `--out_dir` and include model weights, optimizer state, and vocabulary.
+
+Predict 1 image with CNN-RNN:
+```
+python predict.py --model_arch cnn_rnn --image ./Images/COCO_val2014_000000562207.jpg --checkpoint ./checkpoints/cnn_rnn/flickr30k_cnn_rnn-014.pt
+```
+
+Evaluate CNN-RNN on Flickr30k annotations:
+```
+python evaluate.py --model_arch cnn_rnn --images_dir ./data/flickr30k/flickr30k-images --karpathy_json ./data/flickr30k/dataset_flickr30k.json --split test --checkpoint ./checkpoints/cnn_rnn/flickr30k_cnn_rnn-014.pt --save_predictions ./checkpoints/cnn_rnn/eval_results.json
+```
+
+ClipCap mode remains unchanged and is the default (`--model_arch clipcap`).
 
 ## Evaluation (paper metrics)
 

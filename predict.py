@@ -1,24 +1,51 @@
 # Prediction interface for Cog ⚙️
 # Reference: https://github.com/replicate/cog/blob/main/docs/python.md
 
-import clip
+import argparse
 import os
 from torch import nn
 import numpy as np
 import torch
 import torch.nn.functional as nnf
-import sys
 from typing import Tuple, List, Union, Optional
 from transformers import (
     GPT2Tokenizer,
     GPT2LMHeadModel,
-    AdamW,
-    get_linear_schedule_with_warmup,
 )
 import skimage.io as io
 import PIL.Image
+from PIL import Image
 
-import cog
+try:
+    from torchvision import transforms
+except ImportError:
+    transforms = None
+
+try:
+    import clip
+except ImportError:
+    clip = None
+
+try:
+    import cog
+except ImportError:
+    cog = None
+
+from train import ClipCaptionModel as TrainClipCaptionModel
+from train import ClipCaptionPrefix as TrainClipCaptionPrefix
+from train import MappingType
+
+CNN_RNN_IMPORT_ERROR = None
+try:
+    from train_cnn_rnn import CNNRNNCaptioner, END_TOKEN, PAD_TOKEN, START_TOKEN, UNK_TOKEN, Vocabulary
+except ImportError as exc:
+    CNN_RNN_IMPORT_ERROR = exc
+    CNNRNNCaptioner = None
+    Vocabulary = None
+    START_TOKEN = "<start>"
+    END_TOKEN = "<end>"
+    PAD_TOKEN = "<pad>"
+    UNK_TOKEN = "<unk>"
 
 # import torch
 
@@ -45,53 +72,54 @@ D = torch.device
 CPU = torch.device("cpu")
 
 
-class Predictor(cog.Predictor):
-    def setup(self):
-        """Load the model into memory to make running multiple predictions efficient"""
-        self.device = torch.device("cuda")
-        self.clip_model, self.preprocess = clip.load(
-            "ViT-B/32", device=self.device, jit=False
-        )
-        self.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
-
-        self.models = {}
-        self.prefix_length = 10
-        for key, weights_path in WEIGHTS_PATHS.items():
-            model = ClipCaptionModel(self.prefix_length)
-            model.load_state_dict(torch.load(weights_path, map_location=CPU))
-            model = model.eval()
-            model = model.to(self.device)
-            self.models[key] = model
-
-    @cog.input("image", type=cog.Path, help="Input image")
-    @cog.input(
-        "model",
-        type=str,
-        options=WEIGHTS_PATHS.keys(),
-        default="coco",
-        help="Model to use",
-    )
-    @cog.input(
-        "use_beam_search",
-        type=bool,
-        default=False,
-        help="Whether to apply beam search to generate the output text",
-    )
-    def predict(self, image, model, use_beam_search):
-        """Run a single prediction on the model"""
-        image = io.imread(image)
-        model = self.models[model]
-        pil_image = PIL.Image.fromarray(image)
-        image = self.preprocess(pil_image).unsqueeze(0).to(self.device)
-        with torch.no_grad():
-            prefix = self.clip_model.encode_image(image).to(
-                self.device, dtype=torch.float32
+if cog is not None:
+    class Predictor(cog.Predictor):
+        def setup(self):
+            """Load the model into memory to make running multiple predictions efficient"""
+            self.device = torch.device("cuda")
+            self.clip_model, self.preprocess = clip.load(
+                "ViT-B/32", device=self.device, jit=False
             )
-            prefix_embed = model.clip_project(prefix).reshape(1, self.prefix_length, -1)
-        if use_beam_search:
-            return generate_beam(model, self.tokenizer, embed=prefix_embed)[0]
-        else:
-            return generate2(model, self.tokenizer, embed=prefix_embed)
+            self.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+
+            self.models = {}
+            self.prefix_length = 10
+            for key, weights_path in WEIGHTS_PATHS.items():
+                model = ClipCaptionModel(self.prefix_length)
+                model.load_state_dict(torch.load(weights_path, map_location=CPU))
+                model = model.eval()
+                model = model.to(self.device)
+                self.models[key] = model
+
+        @cog.input("image", type=cog.Path, help="Input image")
+        @cog.input(
+            "model",
+            type=str,
+            options=WEIGHTS_PATHS.keys(),
+            default="coco",
+            help="Model to use",
+        )
+        @cog.input(
+            "use_beam_search",
+            type=bool,
+            default=False,
+            help="Whether to apply beam search to generate the output text",
+        )
+        def predict(self, image, model, use_beam_search):
+            """Run a single prediction on the model"""
+            image = io.imread(image)
+            model = self.models[model]
+            pil_image = PIL.Image.fromarray(image)
+            image = self.preprocess(pil_image).unsqueeze(0).to(self.device)
+            with torch.no_grad():
+                prefix = self.clip_model.encode_image(image).to(
+                    self.device, dtype=torch.float32
+                )
+                prefix_embed = model.clip_project(prefix).reshape(1, self.prefix_length, -1)
+            if use_beam_search:
+                return generate_beam(model, self.tokenizer, embed=prefix_embed)[0]
+            else:
+                return generate2(model, self.tokenizer, embed=prefix_embed)
 
 
 class MLP(nn.Module):
@@ -300,3 +328,215 @@ def generate2(
             generated_list.append(output_text)
 
     return generated_list[0]
+
+
+def _normalize_text(text: str) -> str:
+    return " ".join(text.strip().split())
+
+
+def build_clipcap_predict_model(args: argparse.Namespace) -> nn.Module:
+    mapping_type = {"mlp": MappingType.MLP, "transformer": MappingType.Transformer}[args.mapping_type]
+    prefix_dim = 640 if args.is_rn else 512
+
+    if args.only_prefix:
+        model = TrainClipCaptionPrefix(
+            args.prefix_length,
+            clip_length=args.prefix_length_clip,
+            prefix_size=prefix_dim,
+            num_layers=args.num_layers,
+            mapping_type=mapping_type,
+        )
+    else:
+        model = TrainClipCaptionModel(
+            args.prefix_length,
+            clip_length=args.prefix_length_clip,
+            prefix_size=prefix_dim,
+            num_layers=args.num_layers,
+            mapping_type=mapping_type,
+        )
+
+    try:
+        state_dict = torch.load(args.checkpoint, map_location=args.device, weights_only=True)
+    except TypeError:
+        state_dict = torch.load(args.checkpoint, map_location=args.device)
+    model.load_state_dict(state_dict)
+    return model
+
+
+def build_cnn_rnn_predict_model(args: argparse.Namespace):
+    try:
+        checkpoint = torch.load(args.checkpoint, map_location=args.device, weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(args.checkpoint, map_location=args.device)
+
+    if "vocab" not in checkpoint:
+        raise ValueError("Checkpoint does not include vocabulary. Re-train with train.py --model_arch cnn_rnn")
+
+    vocab_data = checkpoint["vocab"]
+    vocab = Vocabulary(stoi=vocab_data["stoi"], itos=vocab_data["itos"])
+    ckpt_args = checkpoint.get("args", {})
+
+    embed_size = int(args.embed_size or ckpt_args.get("embed_size", 512))
+    hidden_size = int(args.hidden_size or ckpt_args.get("hidden_size", 512))
+    rnn_layers = int(args.rnn_layers or ckpt_args.get("rnn_layers", ckpt_args.get("num_layers", 1)))
+    dropout = float(args.dropout if args.dropout > 0 else ckpt_args.get("dropout", 0.1))
+    unfreeze_cnn = bool(ckpt_args.get("unfreeze_cnn", False))
+
+    model = CNNRNNCaptioner(
+        vocab_size=len(vocab.itos),
+        embed_size=embed_size,
+        hidden_size=hidden_size,
+        num_layers=rnn_layers,
+        freeze_backbone=not unfreeze_cnn,
+        dropout=dropout,
+    )
+    model.load_state_dict(checkpoint["model_state_dict"])
+    return model, vocab
+
+
+def generate_cnn_rnn_caption(
+    model: CNNRNNCaptioner,
+    vocab: Vocabulary,
+    image_tensor: torch.Tensor,
+    device: torch.device,
+    max_len: int,
+    temperature: float,
+) -> str:
+    model.eval()
+    start_idx = vocab.stoi.get(START_TOKEN)
+    end_idx = vocab.stoi.get(END_TOKEN)
+    special_ids = {
+        vocab.stoi.get(PAD_TOKEN, -1),
+        vocab.stoi.get(UNK_TOKEN, -1),
+        start_idx,
+        end_idx,
+    }
+
+    with torch.no_grad():
+        image_features = model.encoder(image_tensor.to(device))
+        batch_size = image_features.size(0)
+
+        h = model.decoder.init_h(image_features).view(batch_size, model.decoder.num_layers, model.decoder.hidden_size)
+        c = model.decoder.init_c(image_features).view(batch_size, model.decoder.num_layers, model.decoder.hidden_size)
+        h = h.transpose(0, 1).contiguous()
+        c = c.transpose(0, 1).contiguous()
+
+        token = torch.tensor([[start_idx]], dtype=torch.long, device=device)
+        output_tokens: List[str] = []
+
+        for _ in range(max_len):
+            embedding = model.decoder.embed(token)
+            out, (h, c) = model.decoder.lstm(embedding, (h, c))
+            logits = model.decoder.fc(out[:, -1, :])
+            if temperature > 0:
+                logits = logits / temperature
+            next_id = int(torch.argmax(logits, dim=-1).item())
+
+            if next_id == end_idx:
+                break
+            if next_id not in special_ids and 0 <= next_id < len(vocab.itos):
+                output_tokens.append(vocab.itos[next_id])
+            token = torch.tensor([[next_id]], dtype=torch.long, device=device)
+
+    return _normalize_text(" ".join(output_tokens))
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Predict image captions with ClipCap or CNN-RNN.")
+    parser.add_argument("--model_arch", default="clipcap", choices=["clipcap", "cnn_rnn"])
+    parser.add_argument("--image", required=True, help="Path to input image")
+    parser.add_argument("--checkpoint", required=True, help="Path to model checkpoint")
+    parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
+
+    parser.add_argument("--mapping_type", default="mlp", choices=["mlp", "transformer"])
+    parser.add_argument("--only_prefix", action="store_true")
+    parser.add_argument("--prefix_length", type=int, default=10)
+    parser.add_argument("--prefix_length_clip", type=int, default=10)
+    parser.add_argument("--num_layers", type=int, default=8)
+    parser.add_argument("--is_rn", action="store_true")
+    parser.add_argument("--normalize_prefix", action="store_true")
+    parser.add_argument("--decode", default="beam", choices=["beam", "nucleus"])
+    parser.add_argument("--beam_size", type=int, default=5)
+    parser.add_argument("--top_p", type=float, default=0.8)
+    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--entry_length", type=int, default=67)
+    parser.add_argument("--clip_model_type", default="ViT-B/32")
+
+    parser.add_argument("--cnn_max_len", type=int, default=30)
+    parser.add_argument("--embed_size", type=int, default=0)
+    parser.add_argument("--hidden_size", type=int, default=0)
+    parser.add_argument("--rnn_layers", type=int, default=0)
+    parser.add_argument("--dropout", type=float, default=0.0)
+    args = parser.parse_args()
+
+    device = torch.device(args.device)
+
+    if args.model_arch == "clipcap":
+        if clip is None:
+            raise ImportError("clip package is required for clipcap mode. Install with: pip install git+https://github.com/openai/CLIP.git")
+
+        model = build_clipcap_predict_model(args).to(device).eval()
+        tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+        clip_model, preprocess = clip.load(args.clip_model_type, device=device, jit=False)
+
+        image = Image.open(args.image).convert("RGB")
+        image_tensor = preprocess(image).unsqueeze(0).to(device)
+        with torch.no_grad():
+            prefix = clip_model.encode_image(image_tensor).to(device, dtype=torch.float32)
+            if args.normalize_prefix:
+                prefix = prefix / prefix.norm(2, dim=-1, keepdim=True)
+            prefix_embed = model.clip_project(prefix).reshape(1, args.prefix_length, -1)
+
+        if args.decode == "beam":
+            caption = generate_beam(
+                model,
+                tokenizer,
+                beam_size=args.beam_size,
+                embed=prefix_embed,
+                entry_length=args.entry_length,
+                temperature=args.temperature,
+            )[0]
+        else:
+            caption = generate2(
+                model,
+                tokenizer,
+                embed=prefix_embed,
+                entry_length=args.entry_length,
+                top_p=args.top_p,
+                temperature=args.temperature,
+            )
+        print(_normalize_text(caption))
+    else:
+        if CNN_RNN_IMPORT_ERROR is not None:
+            raise ImportError(
+                "cnn_rnn mode requires torchvision/PIL dependencies. Install with: pip install torchvision pillow tqdm"
+            ) from CNN_RNN_IMPORT_ERROR
+        if transforms is None:
+            raise ImportError("torchvision is required for cnn_rnn mode. Install with: pip install torchvision")
+
+        model, vocab = build_cnn_rnn_predict_model(args)
+        model = model.to(device).eval()
+
+        image_transform = transforms.Compose(
+            [
+                transforms.Resize(256),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ]
+        )
+        image = Image.open(args.image).convert("RGB")
+        image_tensor = image_transform(image).unsqueeze(0)
+        caption = generate_cnn_rnn_caption(
+            model=model,
+            vocab=vocab,
+            image_tensor=image_tensor,
+            device=device,
+            max_len=args.cnn_max_len,
+            temperature=args.temperature,
+        )
+        print(caption)
+
+
+if __name__ == "__main__":
+    main()

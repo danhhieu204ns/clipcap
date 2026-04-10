@@ -13,6 +13,31 @@ import argparse
 import json
 from typing import Tuple, Optional, Union
 
+CNN_RNN_IMPORT_ERROR = None
+try:
+    from torchvision import transforms
+    from train_cnn_rnn import (
+        CaptionCollator,
+        CNNRNNCaptioner,
+        FlickrCaptionDataset,
+        build_vocab,
+        load_samples,
+        save_checkpoint as save_cnn_rnn_checkpoint,
+        set_seed,
+        train_one_epoch,
+    )
+except ImportError as exc:
+    transforms = None
+    CaptionCollator = None
+    CNNRNNCaptioner = None
+    FlickrCaptionDataset = None
+    build_vocab = None
+    load_samples = None
+    save_cnn_rnn_checkpoint = None
+    set_seed = None
+    train_one_epoch = None
+    CNN_RNN_IMPORT_ERROR = exc
+
 
 class MappingType(Enum):
     MLP = 'mlp'
@@ -337,6 +362,7 @@ def train(dataset: ClipCocoDataset, model: ClipCaptionModel, args,
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--model_arch', type=str, default='clipcap', choices=['clipcap', 'cnn_rnn'])
     parser.add_argument('--data', default='./data/coco/oscar_split_train.pkl')
     parser.add_argument('--out_dir', default='./checkpoints')
     parser.add_argument('--prefix', default='coco_prefix', help='prefix for saved filenames')
@@ -350,22 +376,132 @@ def main():
     parser.add_argument('--num_layers', type=int, default=8)
     parser.add_argument('--is_rn', dest='is_rn', action='store_true')
     parser.add_argument('--normalize_prefix', dest='normalize_prefix', action='store_true')
+
+    parser.add_argument('--images_dir', default='')
+    parser.add_argument('--captions_file', default='')
+    parser.add_argument('--karpathy_json', default='')
+    parser.add_argument('--split', default='train', choices=('all', 'train', 'val', 'test'))
+    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--weight_decay', type=float, default=1e-5)
+    parser.add_argument('--num_workers', type=int, default=4)
+    parser.add_argument('--embed_size', type=int, default=512)
+    parser.add_argument('--hidden_size', type=int, default=512)
+    parser.add_argument('--rnn_layers', type=int, default=1)
+    parser.add_argument('--dropout', type=float, default=0.1)
+    parser.add_argument('--max_tokens', type=int, default=40)
+    parser.add_argument('--min_word_freq', type=int, default=5)
+    parser.add_argument('--unfreeze_cnn', action='store_true', help='Train ResNet backbone weights (cnn_rnn mode)')
+    parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--device', default='cuda:0' if torch.cuda.is_available() else 'cpu')
     args = parser.parse_args()
-    prefix_length = args.prefix_length
-    dataset = ClipCocoDataset(args.data, prefix_length, normalize_prefix=args.normalize_prefix)
-    prefix_dim = 640 if args.is_rn else 512
-    args.mapping_type = {'mlp': MappingType.MLP, 'transformer': MappingType.Transformer}[args.mapping_type]
-    if args.only_prefix:
-        model = ClipCaptionPrefix(prefix_length, clip_length=args.prefix_length_clip, prefix_size=prefix_dim,
-                                  num_layers=args.num_layers, mapping_type=args.mapping_type)
-        print("Train only prefix")
+
+    if args.model_arch == 'clipcap':
+        prefix_length = args.prefix_length
+        dataset = ClipCocoDataset(args.data, prefix_length, normalize_prefix=args.normalize_prefix)
+        prefix_dim = 640 if args.is_rn else 512
+        args.mapping_type = {'mlp': MappingType.MLP, 'transformer': MappingType.Transformer}[args.mapping_type]
+        if args.only_prefix:
+            model = ClipCaptionPrefix(prefix_length, clip_length=args.prefix_length_clip, prefix_size=prefix_dim,
+                                      num_layers=args.num_layers, mapping_type=args.mapping_type)
+            print("Train only prefix")
+        else:
+            model = ClipCaptionModel(prefix_length, clip_length=args.prefix_length_clip, prefix_size=prefix_dim,
+                                      num_layers=args.num_layers, mapping_type=args.mapping_type)
+            print("Train both prefix and GPT")
+            sys.stdout.flush()
+        train(dataset, model, args, lr=2e-5, output_dir=args.out_dir, output_prefix=args.prefix)
     else:
-        model = ClipCaptionModel(prefix_length, clip_length=args.prefix_length_clip, prefix_size=prefix_dim,
-                                  num_layers=args.num_layers, mapping_type=args.mapping_type)
-        print("Train both prefix and GPT")
-        sys.stdout.flush()
-    train(dataset, model, args, output_dir=args.out_dir, output_prefix=args.prefix)
+        if CNN_RNN_IMPORT_ERROR is not None:
+            raise ImportError(
+                'cnn_rnn mode requires torchvision/PIL dependencies. Install with: pip install torchvision pillow tqdm'
+            ) from CNN_RNN_IMPORT_ERROR
+
+        if not args.images_dir:
+            raise ValueError('--images_dir is required for cnn_rnn mode')
+
+        set_seed(args.seed)
+        device = torch.device(args.device)
+
+        samples = load_samples(args)
+        print(f"Loaded {len(samples)} image-caption pairs")
+
+        captions_for_vocab = [caption for _, caption in samples]
+        vocab = build_vocab(captions_for_vocab, min_freq=args.min_word_freq)
+        print(f"Vocab size: {len(vocab.itos)}")
+
+        image_transform = transforms.Compose(
+            [
+                transforms.Resize(256),
+                transforms.RandomCrop(224),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ]
+        )
+
+        dataset = FlickrCaptionDataset(
+            samples=samples,
+            images_dir=args.images_dir,
+            vocab=vocab,
+            image_transform=image_transform,
+            max_tokens=args.max_tokens,
+        )
+
+        dataloader = DataLoader(
+            dataset,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+            pin_memory=torch.cuda.is_available(),
+            collate_fn=CaptionCollator(pad_idx=vocab.pad_idx),
+        )
+
+        model = CNNRNNCaptioner(
+            vocab_size=len(vocab.itos),
+            embed_size=args.embed_size,
+            hidden_size=args.hidden_size,
+            num_layers=args.rnn_layers,
+            freeze_backbone=not args.unfreeze_cnn,
+            dropout=args.dropout,
+        ).to(device)
+
+        optimizer = torch.optim.Adam(
+            [param for param in model.parameters() if param.requires_grad],
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+        )
+        criterion = nn.CrossEntropyLoss()
+
+        os.makedirs(args.out_dir, exist_ok=True)
+        config_path = os.path.join(args.out_dir, f"{args.prefix}_config.json")
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(vars(args), f, indent=2)
+
+        for epoch in range(args.epochs):
+            avg_loss = train_one_epoch(
+                model=model,
+                dataloader=dataloader,
+                optimizer=optimizer,
+                criterion=criterion,
+                device=device,
+                epoch_idx=epoch,
+                total_epochs=args.epochs,
+            )
+            print(f"Epoch {epoch + 1}/{args.epochs} - avg_loss: {avg_loss:.4f}")
+
+            if epoch % args.save_every == 0 or epoch == args.epochs - 1:
+                ckpt_path = os.path.join(args.out_dir, f"{args.prefix}-{epoch:03d}.pt")
+                save_cnn_rnn_checkpoint(
+                    path=ckpt_path,
+                    model=model,
+                    optimizer=optimizer,
+                    epoch=epoch,
+                    avg_loss=avg_loss,
+                    vocab=vocab,
+                    args=args,
+                )
+                print(f"Saved checkpoint: {ckpt_path}")
 
 
 if __name__ == '__main__':
