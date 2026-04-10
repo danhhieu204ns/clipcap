@@ -252,6 +252,34 @@ Train only transformer mapping network:
 python train.py --only_prefix --data ./data/flickr30k/flickr30k_clip_ViT-B_32_train.pkl --out_dir ./flickr30k_train/ --prefix flickr30k_prefix --mapping_type transformer --num_layers 8 --prefix_length 40 --prefix_length_clip 40
 ```
 
+## CNN-RNN Training (Flickr30k)
+
+This repository now includes a standalone CNN-RNN training script:
+- Encoder: ResNet-50 (torchvision)
+- Decoder: LSTM language model
+
+Install dependencies if needed:
+```
+pip install torchvision pillow tqdm
+```
+
+Train from token file (`results_20130124.token` or split CSV):
+```
+python train_cnn_rnn.py --images_dir ./data/flickr30k/flickr30k-images --captions_file ./data/flickr30k/results_20130124.token --out_dir ./checkpoints/cnn_rnn --prefix flickr30k_cnn_rnn --epochs 15 --batch_size 64
+```
+
+Train from Karpathy JSON split:
+```
+python train_cnn_rnn.py --images_dir ./data/flickr30k/flickr30k-images --karpathy_json ./data/flickr30k/dataset_flickr30k.json --split train --out_dir ./checkpoints/cnn_rnn --prefix flickr30k_cnn_rnn --epochs 15 --batch_size 64
+```
+
+Useful options:
+- `--unfreeze_cnn`: fine-tune the ResNet backbone.
+- `--min_word_freq`: minimum token frequency kept in vocabulary.
+- `--max_tokens`: max caption length used for training.
+
+Checkpoints are saved to `--out_dir` and include model weights, optimizer state, and vocabulary.
+
 ## Evaluation (paper metrics)
 
 Evaluate a trained checkpoint with COCO-style captioning metrics used in the ClipCap paper:
