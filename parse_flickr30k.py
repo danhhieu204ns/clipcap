@@ -54,6 +54,45 @@ def parse_token_file(captions_file: str) -> Dict[str, List[str]]:
     return image_to_captions
 
 
+def resolve_images_dir(images_dir: str, data_root: str) -> str:
+    if images_dir and os.path.isdir(images_dir):
+        return images_dir
+
+    candidates = [
+        os.path.join(data_root, "flickr30k_images"),
+        data_root,
+    ]
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return candidate
+
+    raise FileNotFoundError(
+        f"Could not find images directory. Checked: {images_dir}, "
+        + ", ".join(candidates)
+    )
+
+
+def resolve_captions_file(captions_file: str, data_root: str) -> str:
+    if captions_file and os.path.isfile(captions_file):
+        return captions_file
+
+    candidates = [
+        os.path.join(data_root, "results_20130124.token"),
+        os.path.join(data_root, "results.csv"),
+        os.path.join(data_root, "flickr30k_images", "results_20130124.token"),
+        os.path.join(data_root, "flickr30k_images", "results.csv"),
+    ]
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            print(f"Using captions file: {candidate}")
+            return candidate
+
+    raise FileNotFoundError(
+        f"Could not find captions file. Checked: {captions_file}, "
+        + ", ".join(candidates)
+    )
+
+
 def parse_karpathy_json(karpathy_json: str, split: str = 'all') -> Dict[str, List[str]]:
     """
     Parse Karpathy split JSON format (dataset_flickr30k.json).
@@ -127,9 +166,9 @@ def encode_images(samples: List[Tuple[str, str]], images_dir: str, clip_model_ty
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_root', default='./data/flickr30k')
-    parser.add_argument('--images_dir', default='./data/flickr30k/flickr30k-images')
-    parser.add_argument('--captions_file', default='./data/flickr30k/results_20130124.token')
+    parser.add_argument('--data_root', default='./flickr-image-dataset/flickr30k_images')
+    parser.add_argument('--images_dir', default='./flickr-image-dataset/flickr30k_images/flickr30k_images')
+    parser.add_argument('--captions_file', default='./flickr-image-dataset/flickr30k_images/results.csv')
     parser.add_argument('--karpathy_json', default='')
     parser.add_argument('--split', default='all', choices=('all', 'train', 'val', 'test'))
     parser.add_argument('--out_path', default='')
@@ -137,11 +176,17 @@ def main():
     parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     args = parser.parse_args()
 
+    args.data_root = os.path.abspath(args.data_root)
+    args.images_dir = resolve_images_dir(args.images_dir, args.data_root)
+
     if args.karpathy_json:
+        if not os.path.isfile(args.karpathy_json):
+            raise FileNotFoundError(f'Karpathy JSON not found: {args.karpathy_json}')
         captions_map = parse_karpathy_json(args.karpathy_json, split=args.split)
     else:
         if args.split != 'all':
             raise ValueError('--split requires --karpathy_json because token files do not include split labels')
+        args.captions_file = resolve_captions_file(args.captions_file, args.data_root)
         captions_map = parse_token_file(args.captions_file)
 
     samples = collect_samples(captions_map, args.images_dir)
