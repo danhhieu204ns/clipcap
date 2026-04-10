@@ -42,6 +42,32 @@ def parse_token_file(captions_file: str) -> Dict[str, List[Tuple[str, str]]]:
     return image_to_rows
 
 
+def resolve_captions_file(captions_file: str) -> str:
+    if captions_file and os.path.isfile(captions_file):
+        return captions_file
+
+    base_name = os.path.basename(captions_file) if captions_file else ""
+    candidates = [
+        os.path.join("flickr-image-dataset", "flickr30k_images", captions_file),
+        os.path.join("flickr-image-dataset", "flickr30k_images", base_name),
+        os.path.join("data", "flickr30k", base_name),
+        os.path.join("flickr-image-dataset", "flickr30k_images", "results.csv"),
+        os.path.join("flickr-image-dataset", "flickr30k_images", "results_20130124.token"),
+    ]
+
+    checked: List[str] = [captions_file]
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            print(f"Using captions file: {candidate}")
+            return candidate
+        if candidate:
+            checked.append(candidate)
+
+    raise FileNotFoundError(
+        "Could not find captions file. Checked: " + ", ".join(dict.fromkeys(checked))
+    )
+
+
 def write_split(path: str, rows: List[Tuple[str, str]]) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -63,6 +89,7 @@ def main() -> None:
     if abs(ratio_sum - 1.0) > 1e-8:
         raise ValueError("train_ratio + val_ratio + test_ratio must equal 1.0")
 
+    args.captions_file = resolve_captions_file(args.captions_file)
     image_to_rows = parse_token_file(args.captions_file)
     image_ids = sorted(image_to_rows.keys())
     if not image_ids:
