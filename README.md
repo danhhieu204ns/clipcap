@@ -86,6 +86,43 @@ Inference notebook for the **transformer mapping network (without fine-tune GPT-
 Both [COCO](https://drive.google.com/file/d/1IdaBtMSvtyzF0ByVaBHtvM0JYSXRExRX/view?usp=sharing) and [Conceptual Captions](https://drive.google.com/file/d/14pXWwB4Zm82rsDdvbGguLfx9F8aM7ovT/view?usp=sharing) pretrained models are available for mlp mapping network. For the transformer (without fine-tuning GPT-2) we provide [COCO](https://drive.google.com/file/d/1GYPToCqFREwi285wPLhuVExlz7DDUDfJ/view?usp=sharing) pretrained model.
 
 
+## Local Inference (predict.py)
+
+Run caption generation for a single image using a trained checkpoint.
+
+Install dependencies (if missing):
+```bash
+pip install transformers torch numpy pillow scikit-image git+https://github.com/openai/CLIP.git torchvision tqdm
+```
+
+ClipCap: Transformer mapper + GPT-2 fine-tuned
+```bash
+python predict.py --image ./flickr-image-dataset/flickr30k_images/flickr30k_images/1003420127.jpg --checkpoint ./checkpoints/flickr30k_transformer_finetune/flickr30k_transformer_finetune-009.pt --mapping_type transformer --prefix_length 10 --prefix_length_clip 10 --num_layers 8 --decode beam --beam_size 5
+```
+
+ClipCap: Transformer mapper + GPT-2 frozen
+```bash
+python predict.py --image ./flickr-image-dataset/flickr30k_images/flickr30k_images/1003420127.jpg --checkpoint ./checkpoints/flickr30k_transformer_frozen/flickr30k_transformer_frozen-009.pt --mapping_type transformer --only_prefix --prefix_length 10 --prefix_length_clip 10 --num_layers 8 --decode beam --beam_size 5
+```
+
+ClipCap: MLP mapper + GPT-2 frozen
+```bash
+python predict.py --image ./flickr-image-dataset/flickr30k_images/flickr30k_images/1003420127.jpg --checkpoint ./checkpoints/flickr30k_mlp/flickr30k_mlp-009.pt --mapping_type mlp --only_prefix --prefix_length 10 --decode beam --beam_size 5
+```
+
+CNN-RNN
+```bash
+python predict.py --model_arch cnn_rnn --image ./flickr-image-dataset/flickr30k_images/flickr30k_images/1003420127.jpg --checkpoint ./checkpoints/cnn_rnn/flickr30k_cnn_rnn-014.pt
+```
+
+Notes:
+- Output caption is printed to terminal (stdout).
+- To save output image + generated caption, add `--out_dir` (and optional `--output_prefix`).
+- Example: `python predict.py --image ./Images/img.jpg --checkpoint ./checkpoints/flickr30k_transformer_finetune/flickr30k_transformer_finetune-009.pt --mapping_type transformer --prefix_length 10 --prefix_length_clip 10 --num_layers 8 --out_dir ./visualizations/predict_outputs --output_prefix demo`.
+- If CUDA is not available, add `--device cpu`.
+- For nucleus sampling, use `--decode nucleus --top_p 0.8`.
+
+
 
 ## Inference GUI
 1. Run it [in the browser](https://replicate.ai/rmokady/clip_prefix_caption) using replicate.ai UI.

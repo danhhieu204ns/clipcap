@@ -1,6 +1,3 @@
-# Prediction interface for Cog ⚙️
-# Reference: https://github.com/replicate/cog/blob/main/docs/python.md
-
 import argparse
 import os
 from torch import nn
@@ -14,7 +11,7 @@ from transformers import (
 )
 import skimage.io as io
 import PIL.Image
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 try:
     from torchvision import transforms
@@ -334,6 +331,83 @@ def _normalize_text(text: str) -> str:
     return " ".join(text.strip().split())
 
 
+def _wrap_text_to_width(text: str, draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont, max_width: int) -> List[str]:
+    words = text.split()
+    if not words:
+        return [""]
+
+    lines: List[str] = []
+    current_line = words[0]
+    for word in words[1:]:
+        candidate = f"{current_line} {word}"
+        if draw.textlength(candidate, font=font) <= max_width:
+            current_line = candidate
+        else:
+            lines.append(current_line)
+            current_line = word
+    lines.append(current_line)
+    return lines
+
+
+def _load_caption_font(image_width: int) -> ImageFont.ImageFont:
+    font_size = max(18, min(42, image_width // 28))
+    for font_name in ("arial.ttf", "segoeui.ttf", "DejaVuSans.ttf"):
+        try:
+            return ImageFont.truetype(font_name, font_size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def save_captioned_image(image_path: str, caption: str, out_path: str) -> str:
+    image = Image.open(image_path).convert("RGB")
+    font = _load_caption_font(image.width)
+
+    margin_x = max(12, image.width // 60)
+    margin_y = max(10, image.width // 90)
+    line_spacing = max(6, margin_y // 2)
+
+    probe_draw = ImageDraw.Draw(image)
+    max_text_width = max(1, image.width - 2 * margin_x)
+    lines = _wrap_text_to_width(caption, probe_draw, font, max_text_width)
+
+    line_bbox = font.getbbox("Ag")
+    line_height = line_bbox[3] - line_bbox[1]
+    text_block_height = margin_y * 2 + len(lines) * line_height + max(0, len(lines) - 1) * line_spacing
+
+    canvas = image.convert("RGBA")
+    overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+
+    caption_top = max(0, image.height - text_block_height)
+    overlay_draw.rectangle([(0, caption_top), (image.width, image.height)], fill=(0, 0, 0, 150))
+
+    y = caption_top + margin_y
+    for line in lines:
+        overlay_draw.text((margin_x, y), line, fill=(255, 255, 255, 255), font=font)
+        y += line_height + line_spacing
+
+    canvas = Image.alpha_composite(canvas, overlay).convert("RGB")
+
+    out_dir = os.path.dirname(out_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    canvas.save(out_path)
+    return out_path
+
+
+def save_prediction_outputs(image_path: str, caption: str, out_dir: str, output_prefix: str = "") -> Tuple[str, str]:
+    os.makedirs(out_dir, exist_ok=True)
+    prefix = output_prefix.strip() or os.path.splitext(os.path.basename(image_path))[0]
+    out_image_path = os.path.join(out_dir, f"{prefix}_captioned.jpg")
+    out_caption_path = os.path.join(out_dir, f"{prefix}_caption.txt")
+
+    save_captioned_image(image_path=image_path, caption=caption, out_path=out_image_path)
+    with open(out_caption_path, "w", encoding="utf-8") as f:
+        f.write(caption + "\n")
+    return out_image_path, out_caption_path
+
+
 def build_clipcap_predict_model(args: argparse.Namespace) -> nn.Module:
     mapping_type = {"mlp": MappingType.MLP, "transformer": MappingType.Transformer}[args.mapping_type]
     prefix_dim = 640 if args.is_rn else 512
@@ -447,6 +521,8 @@ def main() -> None:
     parser.add_argument("--image", required=True, help="Path to input image")
     parser.add_argument("--checkpoint", required=True, help="Path to model checkpoint")
     parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--out_dir", default="", help="Directory to save output image+caption files")
+    parser.add_argument("--output_prefix", default="", help="Prefix for saved output files")
 
     parser.add_argument("--mapping_type", default="mlp", choices=["mlp", "transformer"])
     parser.add_argument("--only_prefix", action="store_true")
@@ -505,7 +581,6 @@ def main() -> None:
                 top_p=args.top_p,
                 temperature=args.temperature,
             )
-        print(_normalize_text(caption))
     else:
         if CNN_RNN_IMPORT_ERROR is not None:
             raise ImportError(
@@ -535,7 +610,19 @@ def main() -> None:
             max_len=args.cnn_max_len,
             temperature=args.temperature,
         )
-        print(caption)
+
+    caption = _normalize_text(caption)
+    print(caption)
+
+    if args.out_dir:
+        out_image_path, out_caption_path = save_prediction_outputs(
+            image_path=args.image,
+            caption=caption,
+            out_dir=args.out_dir,
+            output_prefix=args.output_prefix,
+        )
+        print(f"Saved captioned image: {out_image_path}")
+        print(f"Saved caption text: {out_caption_path}")
 
 
 if __name__ == "__main__":
