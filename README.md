@@ -578,14 +578,9 @@ visualizations/token_focus/transformer_token_focus/
 - `timeline.png`: tổng hợp các bước quan trọng
 - `summary.json`: lưu token id, token text, caption từng bước và đường dẫn ảnh
 
-Ghi chú phương pháp:
-
-- spatial map trong script này là `CLIP Patch-CAM proxy conditioned on generated text so far`,
-- không phải attention map nội tại của transformer mapper hoặc GPT-2.
 
 ## Kết quả trực quan hóa hiện có
 
-Thư mục [visualizations](/c:/Users/Asus/Desktop/clipcap/visualizations) hiện chứa bốn ví dụ minh họa cho cùng một ảnh.
 
 <table>
   <tr>
