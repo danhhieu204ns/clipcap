@@ -102,6 +102,35 @@ Ghi chú:
 - `matplotlib` là bắt buộc cho các script visualize.
 - `bert-score` là tùy chọn; nếu thiếu, `evaluate.py` vẫn chạy và bỏ qua BERTScore.
 
+## Web app toi gian (upload anh + gen caption)
+
+Repo da co san web app nhe voi giao dien theme sang:
+
+- upload 1 anh,
+- chon 1 trong 4 mode: `cnn-rnn`, `mlp`, `transformer`, `finetune`,
+- goi API va hien thi caption ngay tren trang.
+
+Chay web app:
+
+```bash
+pip install flask
+python web_app.py
+```
+
+Mo trinh duyet tai:
+
+```text
+http://127.0.0.1:7860
+```
+
+API endpoint chinh:
+
+- `POST /api/caption` (multipart/form-data)
+  - field `image`: file anh
+  - field `mode`: `all` | `cnn-rnn` | `mlp` | `transformer` | `finetune`
+
+Mac dinh neu bo qua `mode`, API se dung `all` de tra ve ket qua tu ca 4 mode trong 1 request, phu hop cho so sanh nhanh.
+
 ## Dữ liệu
 
 ### 1. Dữ liệu cho CNN-RNN

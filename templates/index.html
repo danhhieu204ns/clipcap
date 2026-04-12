@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Caption Lab</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body>
+    <div class="orb orb-a"></div>
+    <div class="orb orb-b"></div>
+    <main class="shell">
+      <section class="panel form-panel fade-in-up">
+        <p class="kicker">Image Captioning App</p>
+        <h1>Caption Lab</h1>
+        <p class="subtitle">Upload one image and compare 4 captioning modes in a single request.</p>
+
+        <form id="caption-form" enctype="multipart/form-data">
+          <label class="upload-box" for="image-input">
+            <input id="image-input" name="image" type="file" accept="image/*" required />
+            <span id="upload-text">Drop image here or click to browse</span>
+          </label>
+
+          <div class="mode-grid">
+            <label class="mode-card mode-card-all">
+              <input type="radio" name="mode" value="all" checked />
+              <span>Compare All 4 Modes</span>
+            </label>
+            {% for mode_key, mode_label in mode_labels.items() %}
+            <label class="mode-card">
+              <input type="radio" name="mode" value="{{ mode_key }}" />
+              <span>{{ mode_label }}</span>
+            </label>
+            {% endfor %}
+          </div>
+
+          <button id="submit-button" type="submit">Generate Caption</button>
+        </form>
+      </section>
+
+      <section class="panel output-panel fade-in-up delay-1">
+        <div class="preview-wrap">
+          <img id="preview-image" alt="Uploaded image preview" />
+          <p id="preview-placeholder">Image preview appears here</p>
+        </div>
+
+        <div class="result-wrap">
+          <p class="meta" id="result-meta">No requests yet.</p>
+          <div class="compare-results" id="compare-results">
+            <p class="caption" id="caption-output">Caption output will appear here after generation.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+  </body>
+</html>
