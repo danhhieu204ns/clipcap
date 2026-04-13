@@ -380,7 +380,7 @@ Ngoài checkpoint `.pt`, repo còn lưu thêm:
 ```bash
 python predict.py \
   --model_arch clipcap \
-  --image ./Images/img.jpg \
+  --image ./Images/img3.jpg \
   --checkpoint ./checkpoints/flickr30k_transformer_finetune/flickr30k_transformer_finetune-009.pt \
   --mapping_type transformer \
   --prefix_length 10 \
