@@ -61,26 +61,6 @@ def parse_token_file(captions_file: str) -> Dict[str, List[str]]:
     return image_to_captions
 
 
-def parse_karpathy_json(karpathy_json: str, split: str = "train") -> Dict[str, List[str]]:
-    with open(karpathy_json, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    image_to_captions: Dict[str, List[str]] = {}
-    for item in data.get("images", []):
-        if split != "all" and item.get("split", "") != split:
-            continue
-        image_name = item.get("filename", "")
-        if not image_name:
-            continue
-        for sentence in item.get("sentences", []):
-            raw_caption = sentence.get("raw", "").strip()
-            if not raw_caption:
-                continue
-            caption = add_period(raw_caption)
-            image_to_captions.setdefault(image_name, []).append(caption)
-    return image_to_captions
-
-
 def collect_samples(captions_map: Dict[str, List[str]], images_dir: str) -> List[Tuple[str, str]]:
     samples: List[Tuple[str, str]] = []
     missing_images = 0
@@ -300,12 +280,10 @@ def save_checkpoint(
 
 
 def load_samples(args: argparse.Namespace) -> List[Tuple[str, str]]:
-    if args.karpathy_json:
-        captions_map = parse_karpathy_json(args.karpathy_json, split=args.split)
-    elif args.captions_file:
-        captions_map = parse_token_file(args.captions_file)
-    else:
-        raise ValueError("Provide either --captions_file or --karpathy_json")
+    if not args.captions_file:
+        raise ValueError("Provide --captions_file")
+
+    captions_map = parse_token_file(args.captions_file)
 
     samples = collect_samples(captions_map, args.images_dir)
     if not samples:
@@ -359,8 +337,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train a CNN-RNN image captioning model on Flickr30k.")
     parser.add_argument("--images_dir", required=True, help="Path to Flickr30k image directory")
     parser.add_argument("--captions_file", default="", help="Path to token/results file")
-    parser.add_argument("--karpathy_json", default="", help="Path to Karpathy JSON (dataset_flickr30k.json)")
-    parser.add_argument("--split", default="train", choices=("all", "train", "val", "test"))
     parser.add_argument("--out_dir", default="./checkpoints/cnn_rnn")
     parser.add_argument("--prefix", default="flickr30k_cnn_rnn")
 

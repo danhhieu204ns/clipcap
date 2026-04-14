@@ -379,8 +379,6 @@ def main():
 
     parser.add_argument('--images_dir', default='')
     parser.add_argument('--captions_file', default='')
-    parser.add_argument('--karpathy_json', default='')
-    parser.add_argument('--split', default='train', choices=('all', 'train', 'val', 'test'))
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--weight_decay', type=float, default=1e-5)
