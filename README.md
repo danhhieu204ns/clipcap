@@ -26,9 +26,11 @@ ClipCap trong repo này tuân theo ý tưởng dùng đặc trưng ảnh từ CL
 
 Repo hỗ trợ ba cấu hình ClipCap:
 
-1. `MLP + GPT-2 frozen`
-2. `Transformer mapper + GPT-2 frozen`
-3. `Transformer mapper + GPT-2 fine-tuned`
+1. `MLP mapping (GPT-2 frozen)`
+2. `Transformer mapping (GPT-2 frozen)`
+3. `Transformer mapping + GPT-2 fine-tuned`
+
+Tổng cộng có 4 mode sử dụng trong web app/API: `cnn-rnn`, `mlp`, `transformer`, `finetune`.
 
 ### 2. CNN-RNN
 
@@ -74,7 +76,7 @@ Các tệp chính:
 - [evaluate.py](/c:/Users/Asus/Desktop/clipcap/evaluate.py): đánh giá trên tập dữ liệu với các metric captioning.
 - [visualize_captioning.py](/c:/Users/Asus/Desktop/clipcap/visualize_captioning.py): trực quan hóa `Grad-CAM` hoặc `CLIP Patch-CAM`.
 - [visualize_transformer_token_focus.py](/c:/Users/Asus/Desktop/clipcap/visualize_transformer_token_focus.py): phân tích focus theo từng bước sinh token.
-- [split_flickr30k_captions.py](/c:/Users/Asus/Desktop/clipcap/split_flickr30k_captions.py): chia annotation Flickr30k thành train/val/test theo image-level.
+- [split_flickr30k_captions.py](/c:/Users/Asus/Desktop/clipcap/split_flickr30k_captions.py): đọc caption + thư mục ảnh, split train/test theo image-level, encode CLIP và xuất file `.pkl` cho ClipCap.
 - [download.py](/c:/Users/Asus/Desktop/clipcap/download.py): tải Flickr image dataset qua `kagglehub`.
 
 ## Cài đặt
@@ -107,7 +109,7 @@ Ghi chú:
 Repo da co san web app nhe voi giao dien theme sang:
 
 - upload 1 anh,
-- chon 1 trong 4 mode: `cnn-rnn`, `mlp`, `transformer`, `finetune`,
+- chon 1 trong 4 mode: `cnn-rnn` (baseline), `mlp` (MLP mapping), `transformer` (Transformer mapping), `finetune` (Transformer mapping + fine-tune GPT-2),
 - goi API va hien thi caption ngay tren trang.
 
 Chay web app:
@@ -137,14 +139,9 @@ Mac dinh neu bo qua `mode`, API se dung `all` de tra ve ket qua tu ca 4 mode tro
 
 Baseline CNN-RNN làm việc trực tiếp với ảnh và caption thô.
 
-Hai định dạng annotation được hỗ trợ:
-
-1. Token file:
+Token file:
    - `image_name#idx<TAB>caption`
    - hoặc `image_name|idx|caption`
-2. Karpathy JSON:
-   - dùng với `--karpathy_json`
-   - hỗ trợ `--split train|val|test|all`
 
 Cấu trúc thư mục điển hình:
 
@@ -170,15 +167,8 @@ Mỗi phần tử trong `captions` cần có tối thiểu:
 - `image_id`
 - `clip_embedding`
 
-Lưu ý quan trọng:
+Bạn có thể tạo trực tiếp các file `.pkl` train/test bằng script `split_flickr30k_captions.py` (chi tiết ở mục chia dữ liệu bên dưới), không cần tự viết thêm bước encode CLIP.
 
-- repo hiện tham chiếu tới các script như `parse_flickr30k.py`, `parse_coco.py`, `parse_conceptual.py`,
-- nhưng các script đó không có mặt trong mã nguồn hiện tại.
-
-Điều đó có nghĩa:
-
-- để chạy ClipCap, bạn cần file `.pkl` đã chuẩn bị sẵn,
-- hoặc tự bổ sung bước trích xuất CLIP embedding tương ứng.
 
 ### 3. Tải Flickr dataset
 
@@ -191,51 +181,57 @@ Script sẽ:
 - tải dataset `hsankesara/flickr-image-dataset` bằng `kagglehub`,
 - sao chép dữ liệu từ cache về thư mục dự án.
 
-### 4. Chia train/val/test cho Flickr30k
+### 4. Chia train/test cho Flickr30k
 
 ```bash
-python split_flickr30k_captions.py \
-  --captions_file ./data/flickr30k/results_20130124.token \
-  --out_dir ./data/flickr30k \
-  --train_ratio 0.8 \
-  --val_ratio 0.1 \
-  --test_ratio 0.1 \
+python split_flickr30k_captions.py
+  --captions_file ./data/flickr30k/results_20130124.token
+  --images_dir ./flickr-image-dataset/flickr30k_images/flickr30k_images
+  --out_dir ./data/flickr30k
+  --train_ratio 0.9
+  --test_ratio 0.1
+  --clip_model_type ViT-B/32
+  --batch_size 128
+  --device cuda:0
   --seed 42
 ```
 
 Kết quả:
 
 - `results_train.csv`
-- `results_val.csv`
 - `results_test.csv`
+- `flickr30k_clip_ViT-B_32_train.pkl`
+- `flickr30k_clip_ViT-B_32_test.pkl`
 
-Script chia theo `image id`, do đó các caption của cùng một ảnh sẽ không bị rơi vào nhiều tập khác nhau.
+Script hoạt động theo pipeline:
+
+1. đọc file caption (`.token` hoặc `.csv`) và gom caption theo từng ảnh,
+2. split train/test theo `image id` (tránh leakage giữa các tập),
+3. đọc ảnh từ `--images_dir`, encode bằng CLIP,
+4. lưu đồng thời file split `.csv` và file `.pkl` dùng trực tiếp cho `train.py`/`evaluate.py` của ClipCap.
+
+Lưu ý quan trọng:
+
+- `train_ratio + test_ratio` phải bằng `1.0`.
+- Cần cài CLIP: `pip install git+https://github.com/openai/CLIP.git`.
+- Nếu không có GPU, đặt `--device cpu`.
+- Có thể ghi đè đường dẫn output `.pkl` bằng `--train_pkl` và `--test_pkl`.
 
 ## Huấn luyện
 
 ## 1. Huấn luyện ClipCap
-
-Lệnh cơ bản:
-
-```bash
-python train.py \
-  --model_arch clipcap \
-  --data ./data/flickr30k/flickr30k_clip_ViT-B_32_train.pkl \
-  --out_dir ./checkpoints/flickr30k_mlp \
-  --prefix flickr30k_mlp
-```
 
 ### Các cấu hình ClipCap
 
 #### a. MLP mapper, chỉ train prefix
 
 ```bash
-python train.py \
-  --model_arch clipcap \
-  --data ./data/flickr30k/flickr30k_clip_ViT-B_32_train.pkl \
-  --out_dir ./checkpoints/flickr30k_mlp \
-  --prefix flickr30k_mlp \
-  --mapping_type mlp \
+python train.py 
+  --model_arch clipcap 
+  --data ./data/flickr30k/flickr30k_clip_ViT-B_32_train.pkl 
+  --out_dir ./checkpoints/flickr30k_mlp 
+  --prefix flickr30k_mlp 
+  --mapping_type mlp 
   --only_prefix
 ```
 
@@ -267,6 +263,8 @@ python train.py \
   --prefix_length_clip 10 \
   --num_layers 8
 ```
+
+Lưu ý: mode `finetune` không dùng `--only_prefix`, tức là cho phép cập nhật cả GPT-2.
 
 ### Tham số chính của ClipCap
 
@@ -381,8 +379,9 @@ Ngoài checkpoint `.pt`, repo còn lưu thêm:
 python predict.py \
   --model_arch clipcap \
   --image ./Images/img3.jpg \
-  --checkpoint ./checkpoints/flickr30k_transformer_finetune/flickr30k_transformer_finetune-009.pt \
+  --checkpoint ./checkpoints/flickr30k_transformer_frozen/flickr30k_transformer_frozen-009.pt \
   --mapping_type transformer \
+  --only_prefix \
   --prefix_length 10 \
   --prefix_length_clip 10 \
   --num_layers 8 \
@@ -547,7 +546,7 @@ python visualize_captioning.py \
   --output_prefix clip_transformer_frozen
 ```
 
-### ClipCap Transformer fine-tune
+### ClipCap Transformer + fine-tune GPT-2
 
 ```bash
 python visualize_captioning.py \
@@ -575,7 +574,7 @@ Script này dành cho checkpoint ClipCap, đặc biệt là cấu hình `transfo
 ```bash
 python visualize_transformer_token_focus.py \
   --image ./Images/img.jpg \
-  --checkpoint ./checkpoints/flickr30k_transformer_finetune/flickr30k_transformer_finetune-009.pt \
+  --checkpoint ./checkpoints/flickr30k_transformer_frozen/flickr30k_transformer_frozen-009.pt \
   --mapping_type transformer \
   --prefix_length 10 \
   --prefix_length_clip 10 \
@@ -638,9 +637,9 @@ visualizations/token_focus/transformer_token_focus/
   </tr>
   <tr>
     <td><img src="Images/img.jpg" alt="Ảnh gốc" width="180"></td>
-    <td><code>ClipCap Transformer fine-tune</code></td>
+    <td><code>ClipCap Transformer + fine-tune GPT-2</code></td>
     <td><code>A dog is playing with a tennis ball.</code></td>
-    <td><img src="visualizations/clip_transformer_finetune_clip_patch_cam.png" alt="ClipCap Transformer fine-tune Patch-CAM" width="240"></td>
+    <td><img src="visualizations/clip_transformer_finetune_clip_patch_cam.png" alt="ClipCap Transformer fine-tuned Patch-CAM" width="240"></td>
   </tr>
 </table>
 Patch-CAM là phép giải thích gián tiếp
@@ -809,7 +808,10 @@ python train.py \
   --data ./data/flickr30k/flickr30k_clip_ViT-B_32_train.pkl \
   --out_dir ./checkpoints/flickr30k_transformer_finetune \
   --prefix flickr30k_transformer_finetune \
-  --mapping_type transformer
+  --mapping_type transformer \
+  --prefix_length 10 \
+  --prefix_length_clip 10 \
+  --num_layers 8
 ```
 
 3. Predict:
@@ -858,7 +860,7 @@ python visualize_captioning.py \
 ```bash
 python visualize_transformer_token_focus.py \
   --image ./Images/img.jpg \
-  --checkpoint ./checkpoints/flickr30k_transformer_finetune/flickr30k_transformer_finetune-009.pt \
+  --checkpoint ./checkpoints/flickr30k_transformer_frozen/flickr30k_transformer_frozen-009.pt \
   --mapping_type transformer \
   --prefix_length 10 \
   --prefix_length_clip 10 \
