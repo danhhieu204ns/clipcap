@@ -21,7 +21,6 @@ try:
         START_TOKEN,
         UNK_TOKEN,
         Vocabulary,
-        parse_karpathy_json,
         parse_token_file,
     )
 except ImportError as exc:
@@ -32,7 +31,6 @@ except ImportError as exc:
     END_TOKEN = "<end>"
     PAD_TOKEN = "<pad>"
     UNK_TOKEN = "<unk>"
-    parse_karpathy_json = None
     parse_token_file = None
 
 
@@ -273,12 +271,10 @@ def compute_coco_metrics(references: Dict[str, List[str]], predictions: Dict[str
 
 
 def load_cnn_rnn_eval_data(args: argparse.Namespace) -> Tuple[List[str], Dict[str, List[str]]]:
-    if args.karpathy_json:
-        captions_map = parse_karpathy_json(args.karpathy_json, split=args.split)
-    elif args.captions_file:
-        captions_map = parse_token_file(args.captions_file)
-    else:
-        raise ValueError("For cnn_rnn mode, provide --karpathy_json or --captions_file")
+    if not args.captions_file:
+        raise ValueError("For cnn_rnn mode, provide --captions_file")
+
+    captions_map = parse_token_file(args.captions_file)
 
     references: Dict[str, List[str]] = OrderedDict()
     for image_id, captions in captions_map.items():
@@ -396,8 +392,6 @@ def main() -> None:
 
     parser.add_argument("--images_dir", default="", help="Image folder (cnn_rnn mode)")
     parser.add_argument("--captions_file", default="", help="Caption token file/csv (cnn_rnn mode)")
-    parser.add_argument("--karpathy_json", default="", help="Karpathy json annotation (cnn_rnn mode)")
-    parser.add_argument("--split", default="test", choices=("all", "train", "val", "test"))
     parser.add_argument("--cnn_max_len", type=int, default=30)
     parser.add_argument("--embed_size", type=int, default=0)
     parser.add_argument("--hidden_size", type=int, default=0)
