@@ -181,6 +181,18 @@ Script sẽ:
 - tải dataset `hsankesara/flickr-image-dataset` bằng `kagglehub`,
 - sao chép dữ liệu từ cache về thư mục dự án.
 
+Để tải MSCOCO 2017, dùng script riêng:
+
+```bash
+python download_mscoco.py --out_dir ./data/mscoco
+```
+
+Script này tải và giải nén:
+
+- `train2017.zip`
+- `val2017.zip`
+- `annotations_trainval2017.zip`
+
 ### 4. Chia train/test cho Flickr30k
 
 ```bash
@@ -217,6 +229,37 @@ Lưu ý quan trọng:
 - Nếu không có GPU, đặt `--device cpu`.
 - Có thể ghi đè đường dẫn output `.pkl` bằng `--train_pkl` và `--test_pkl`.
 
+### 5. Chuẩn bị dữ liệu MSCOCO cho ClipCap
+
+Nếu chưa có dữ liệu COCO, chạy trước:
+
+```bash
+python download_mscoco.py --out_dir ./data/mscoco
+```
+
+Repo đã có script mới `prepare_mscoco_clipcap.py` để đọc trực tiếp annotation COCO (`captions_train*.json`, `captions_val*.json`), encode ảnh bằng CLIP và xuất `.pkl` đúng format cho `train.py`.
+
+Ví dụ với COCO 2017:
+
+```bash
+python prepare_mscoco_clipcap.py 
+  --train_annotations ./data/mscoco/annotations/captions_train2017.json 
+  --val_annotations ./data/mscoco/annotations/captions_val2017.json 
+  --train_images_dir ./data/mscoco/train2017 
+  --val_images_dir ./data/mscoco/val2017 
+  --out_dir ./data/mscoco 
+  --clip_model_type ViT-B/32 
+  --batch_size 128 
+  --device cuda:0
+```
+
+Kết quả tạo ra:
+
+- `results_train.csv`
+- `results_val.csv`
+- `mscoco_clip_ViT-B_32_train.pkl`
+- `mscoco_clip_ViT-B_32_val.pkl`
+
 ## Huấn luyện
 
 ## 1. Huấn luyện ClipCap
@@ -238,33 +281,83 @@ python train.py
 #### b. Transformer mapper, GPT-2 frozen
 
 ```bash
-python train.py \
-  --model_arch clipcap \
-  --data ./data/flickr30k/flickr30k_clip_ViT-B_32_train.pkl \
-  --out_dir ./checkpoints/flickr30k_transformer_frozen \
-  --prefix flickr30k_transformer_frozen \
-  --mapping_type transformer \
-  --only_prefix \
-  --prefix_length 10 \
-  --prefix_length_clip 10 \
+python train.py
+  --model_arch clipcap
+  --data ./data/flickr30k/flickr30k_clip_ViT-B_32_train.pkl
+  --out_dir ./checkpoints/flickr30k_transformer_frozen
+  --prefix flickr30k_transformer_frozen
+  --mapping_type transformer
+  --only_prefix
+  --prefix_length 10
+  --prefix_length_clip 10
   --num_layers 8
 ```
 
 #### c. Transformer mapper, fine-tune GPT-2
 
 ```bash
-python train.py \
-  --model_arch clipcap \
-  --data ./data/flickr30k/flickr30k_clip_ViT-B_32_train.pkl \
-  --out_dir ./checkpoints/flickr30k_transformer_finetune \
-  --prefix flickr30k_transformer_finetune \
-  --mapping_type transformer \
-  --prefix_length 10 \
-  --prefix_length_clip 10 \
+python train.py 
+  --model_arch clipcap 
+  --data ./data/flickr30k/flickr30k_clip_ViT-B_32_train.pkl 
+  --out_dir ./checkpoints/flickr30k_transformer_finetune 
+  --prefix flickr30k_transformer_finetune 
+  --mapping_type transformer 
+  --prefix_length 10 
+  --prefix_length_clip 10 
   --num_layers 8
 ```
 
 Lưu ý: mode `finetune` không dùng `--only_prefix`, tức là cho phép cập nhật cả GPT-2.
+
+### Train ClipCap với MSCOCO
+
+Sau khi chạy `prepare_mscoco_clipcap.py`, bạn có thể train tương tự Flickr30k, chỉ cần đổi đường dẫn `--data` và tên checkpoint.
+
+Ví dụ `transformer` + fine-tune GPT-2:
+
+```bash
+python train.py 
+  --model_arch clipcap 
+  --data ./data/mscoco/mscoco_clip_ViT-B_32_train.pkl 
+  --out_dir ./checkpoints/mscoco_transformer_finetune 
+  --prefix mscoco_transformer_finetune 
+  --mapping_type transformer 
+  --prefix_length 10 
+  --prefix_length_clip 10 
+  --num_layers 8 
+  --epochs 10 
+  --bs 40 
+  --device cuda:0
+```
+
+Pipeline đầy đủ cho MSCOCO:
+
+```bash
+python download_mscoco.py --out_dir ./data/mscoco
+
+python prepare_mscoco_clipcap.py \
+  --train_annotations ./data/mscoco/annotations/captions_train2017.json \
+  --val_annotations ./data/mscoco/annotations/captions_val2017.json \
+  --train_images_dir ./data/mscoco/train2017 \
+  --val_images_dir ./data/mscoco/val2017 \
+  --out_dir ./data/mscoco \
+  --clip_model_type ViT-B/32 \
+  --batch_size 128 \
+  --device cuda:0
+
+python train.py \
+  --model_arch clipcap \
+  --data ./data/mscoco/mscoco_clip_ViT-B_32_train.pkl \
+  --out_dir ./checkpoints/mscoco_transformer_finetune \
+  --prefix mscoco_transformer_finetune \
+  --mapping_type transformer \
+  --prefix_length 10 \
+  --prefix_length_clip 10 \
+  --num_layers 8 \
+  --epochs 10 \
+  --bs 40 \
+  --device cuda:0
+```
 
 ### Tham số chính của ClipCap
 
@@ -301,46 +394,54 @@ Ví dụ:
 ### Cách 1. Gọi trực tiếp `train_cnn_rnn.py`
 
 ```bash
-python train_cnn_rnn.py \
-  --images_dir ./data/flickr30k/flickr30k-images \
-  --captions_file ./data/flickr30k/results_20130124.token \
-  --out_dir ./checkpoints/cnn_rnn \
+python train_cnn_rnn.py 
+  --images_dir ./flickr-image-dataset/flickr30k_images/flickr30k_images 
+  --captions_file ./data/flickr30k/results_train.csv 
+  --out_dir ./checkpoints/cnn_rnn 
   --prefix flickr30k_cnn_rnn
 ```
 
 ### Cách 2. Dùng `train.py`
 
 ```bash
-python train.py \
-  --model_arch cnn_rnn \
-  --images_dir ./data/flickr30k/flickr30k-images \
-  --captions_file ./data/flickr30k/results_20130124.token \
-  --out_dir ./checkpoints/cnn_rnn \
-  --prefix flickr30k_cnn_rnn \
-  --epochs 15 \
+python train.py 
+  --model_arch cnn_rnn 
+  --images_dir ./flickr-image-dataset/flickr30k_images/flickr30k_images 
+  --captions_file ./data/flickr30k/results_train.csv 
+  --out_dir ./checkpoints/cnn_rnn 
+  --prefix flickr30k_cnn_rnn 
+  --epochs 10
   --batch_size 64
 ```
 
-### Train theo Karpathy split
+### Trường hợp ảnh gốc nằm ở thư mục khác
+
+Bạn có thể giữ `results_train.csv` trong project, nhưng trỏ `--images_dir` đến đường dẫn tuyệt đối ngoài workspace:
 
 ```bash
 python train.py \
   --model_arch cnn_rnn \
-  --images_dir ./data/flickr30k/flickr30k-images \
-  --karpathy_json ./data/flickr30k/dataset_flickr30k.json \
-  --split train \
-  --out_dir ./checkpoints/cnn_rnn \
-  --prefix flickr30k_cnn_rnn
+  --images_dir "E:/datasets/flickr30k/flickr30k_images" \
+  --captions_file "./data/flickr30k/results_train.csv" \
+  --out_dir "./checkpoints/cnn_rnn" \
+  --prefix flickr30k_cnn_rnn \
+  --epochs 15 \
+  --batch_size 64 \
+  --device cuda:0
 ```
+
+Lưu ý:
+
+- `--images_dir` phải chứa trực tiếp file ảnh với đúng tên như trong `results_train.csv` (ví dụ `3328495660.jpg`).
+- Trên Windows nên đặt đường dẫn trong dấu `"..."`.
+- Nên test nhanh trước bằng `--epochs 1 --batch_size 16 --num_workers 0` để kiểm tra mapping ảnh-caption.
 
 ### Tham số chính của CNN-RNN
 
 | Tham số | Ý nghĩa |
 |---|---|
-| `--images_dir` | Thư mục ảnh |
-| `--captions_file` | File caption thô |
-| `--karpathy_json` | Annotation dạng Karpathy |
-| `--split` | `train`, `val`, `test` hoặc `all` |
+| `--images_dir` | Thư mục ảnh (có thể là đường dẫn tuyệt đối nằm ngoài project) |
+| `--captions_file` | File caption train (`.csv` hoặc `.token`) |
 | `--epochs` | Số epoch, mặc định `15` |
 | `--batch_size` | Batch size, mặc định `64` |
 | `--lr` | Learning rate |
@@ -376,29 +477,29 @@ Ngoài checkpoint `.pt`, repo còn lưu thêm:
 ### Beam search
 
 ```bash
-python predict.py \
-  --model_arch clipcap \
-  --image ./Images/img3.jpg \
-  --checkpoint ./checkpoints/flickr30k_transformer_frozen/flickr30k_transformer_frozen-009.pt \
-  --mapping_type transformer \
-  --only_prefix \
-  --prefix_length 10 \
-  --prefix_length_clip 10 \
-  --num_layers 8 \
-  --decode beam \
-  --beam_size 5
+python predict.py 
+  --model_arch clipcap 
+  --image ./Images/img3.jpg 
+  --checkpoint ./checkpoints/flickr30k_transformer_frozen/flickr30k_transformer_frozen-009.pt 
+  --mapping_type transformer 
+  --only_prefix 
+  --prefix_length 10 
+  --prefix_length_clip 10 
+  --num_layers 8 
+  --decode beam 
+  --beam_size 
 ```
 
 ### Nucleus decoding
 
 ```bash
-python predict.py \
-  --model_arch clipcap \
-  --image ./Images/img.jpg \
-  --checkpoint ./checkpoints/flickr30k_mlp/flickr30k_mlp-009.pt \
-  --mapping_type mlp \
-  --only_prefix \
-  --decode nucleus \
+python predict.py 
+  --model_arch clipcap 
+  --image ./Images/img.jpg 
+  --checkpoint ./checkpoints/flickr30k_mlp/flickr30k_mlp-009.pt 
+  --mapping_type mlp 
+  --only_prefix 
+  --decode nucleus 
   --top_p 0.8
 ```
 
@@ -414,9 +515,9 @@ Các tham số decode quan trọng:
 ## 2. Inferemce với CNN-RNN
 
 ```bash
-python predict.py \
-  --model_arch cnn_rnn \
-  --image ./Images/img.jpg \
+python predict.py 
+  --model_arch cnn_rnn 
+  --image ./Images/img.jpg 
   --checkpoint ./checkpoints/cnn_rnn/flickr30k_cnn_rnn-014.pt
 ```
 
@@ -674,8 +775,6 @@ Nhóm CNN-RNN:
 
 - `--images_dir`
 - `--captions_file`
-- `--karpathy_json`
-- `--split`
 - `--batch_size`
 - `--lr`
 - `--weight_decay`
@@ -753,15 +852,25 @@ Nhóm CNN-RNN:
 
 ### 1. Với CNN-RNN
 
-1. Chuẩn bị ảnh và annotation Flickr30k.
+1. Chuẩn bị thư mục ảnh và file caption train (`results_train.csv`).
 2. Train:
 
 ```bash
 python train.py \
   --model_arch cnn_rnn \
-  --images_dir ./data/flickr30k/flickr30k-images \
-  --karpathy_json ./data/flickr30k/dataset_flickr30k.json \
-  --split train \
+  --images_dir ./flickr-image-dataset/flickr30k_images/flickr30k_images \
+  --captions_file ./data/flickr30k/results_train.csv \
+  --out_dir ./checkpoints/cnn_rnn \
+  --prefix flickr30k_cnn_rnn
+```
+
+Nếu ảnh nằm ở thư mục khác:
+
+```bash
+python train.py \
+  --model_arch cnn_rnn \
+  --images_dir "E:/datasets/flickr30k/flickr30k_images" \
+  --captions_file ./data/flickr30k/results_train.csv \
   --out_dir ./checkpoints/cnn_rnn \
   --prefix flickr30k_cnn_rnn
 ```
