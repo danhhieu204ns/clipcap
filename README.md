@@ -313,50 +313,45 @@ Lưu ý: mode `finetune` không dùng `--only_prefix`, tức là cho phép cập
 
 Sau khi chạy `prepare_mscoco_clipcap.py`, bạn có thể train tương tự Flickr30k, chỉ cần đổi đường dẫn `--data` và tên checkpoint.
 
-Ví dụ `transformer` + fine-tune GPT-2:
+#### a. MLP mapper, chỉ train prefix
 
 ```bash
 python train.py 
   --model_arch clipcap 
-  --data ./data/mscoco/mscoco_clip_ViT-B_32_train.pkl 
+  --data ./data/mscoco/mscoco_clip_ViT-B_32_train.pkl
+  --out_dir ./checkpoints/mscoco_mlp 
+  --prefix mscoco_mlp 
+  --mapping_type mlp 
+  --only_prefix
+```
+
+#### b. Transformer mapper, GPT-2 frozen
+
+```bash
+python train.py
+  --model_arch clipcap
+  --data ./data/mscoco/mscoco_clip_ViT-B_32_train.pkl
+  --out_dir ./checkpoints/mscoco_transformer_frozen
+  --prefix mscoco_transformer_frozen
+  --mapping_type transformer
+  --only_prefix
+  --prefix_length 10
+  --prefix_length_clip 10
+  --num_layers 8
+```
+
+#### c. Transformer mapper, fine-tune GPT-2
+
+```bash
+python train.py 
+  --model_arch clipcap 
+  --data ./data/mscoco/mscoco_clip_ViT-B_32_train.pkl
   --out_dir ./checkpoints/mscoco_transformer_finetune 
   --prefix mscoco_transformer_finetune 
   --mapping_type transformer 
   --prefix_length 10 
   --prefix_length_clip 10 
-  --num_layers 8 
-  --epochs 10 
-  --bs 40 
-  --device cuda:0
-```
-
-Pipeline đầy đủ cho MSCOCO:
-
-```bash
-python download_mscoco.py --out_dir ./data/mscoco
-
-python prepare_mscoco_clipcap.py \
-  --train_annotations ./data/mscoco/annotations/captions_train2017.json \
-  --val_annotations ./data/mscoco/annotations/captions_val2017.json \
-  --train_images_dir ./data/mscoco/train2017 \
-  --val_images_dir ./data/mscoco/val2017 \
-  --out_dir ./data/mscoco \
-  --clip_model_type ViT-B/32 \
-  --batch_size 128 \
-  --device cuda:0
-
-python train.py \
-  --model_arch clipcap \
-  --data ./data/mscoco/mscoco_clip_ViT-B_32_train.pkl \
-  --out_dir ./checkpoints/mscoco_transformer_finetune \
-  --prefix mscoco_transformer_finetune \
-  --mapping_type transformer \
-  --prefix_length 10 \
-  --prefix_length_clip 10 \
-  --num_layers 8 \
-  --epochs 10 \
-  --bs 40 \
-  --device cuda:0
+  --num_layers 8
 ```
 
 ### Tham số chính của ClipCap
