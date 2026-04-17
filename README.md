@@ -555,16 +555,16 @@ Các metric được hỗ trợ:
 ## 1. Đánh giá ClipCap
 
 ```bash
-python evaluate.py \
-  --model_arch clipcap \
-  --data ./data/flickr30k/flickr30k_clip_ViT-B_32_test.pkl \
-  --checkpoint ./checkpoints/flickr30k_transformer_finetune/flickr30k_transformer_finetune-009.pt \
-  --mapping_type transformer \
-  --prefix_length 10 \
-  --prefix_length_clip 10 \
-  --num_layers 8 \
-  --decode beam \
-  --beam_size 5 \
+python evaluate.py 
+  --model_arch clipcap 
+  --data ./data/flickr30k/flickr30k_clip_ViT-B_32_test.pkl 
+  --checkpoint ./checkpoints/flickr30k_transformer_finetune/flickr30k_transformer_finetune-009.pt 
+  --mapping_type transformer 
+  --prefix_length 10 
+  --prefix_length_clip 10 
+  --num_layers 8 
+  --decode beam 
+  --beam_size 5 
   --save_predictions ./checkpoints/flickr30k_transformer_finetune/eval_results.json
 ```
 
