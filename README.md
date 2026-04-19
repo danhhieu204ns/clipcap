@@ -409,6 +409,46 @@ python train.py
   --batch_size 64
 ```
 
+### Train CNN-RNN với MSCOCO
+
+Sau khi chạy `download_mscoco.py` và `prepare_mscoco_clipcap.py`, bạn đã có sẵn file caption train:
+
+- `./data/mscoco/results_train.csv`
+
+Với CNN-RNN, bạn chỉ cần ảnh gốc và file caption text. Lệnh khuyến nghị:
+
+```bash
+python train.py 
+  --model_arch cnn_rnn 
+  --images_dir "./data/mscoco/train2017" 
+  --captions_file "./data/mscoco/results_train.csv" 
+  --out_dir "./checkpoints/mscoco_cnn_rnn" 
+  --prefix mscoco_cnn_rnn 
+  --epochs 10 
+  --batch_size 64 
+  --num_workers 4 
+  --device cuda:0
+```
+
+Nếu muốn gọi trực tiếp baseline script:
+
+```bash
+python train_cnn_rnn.py \
+  --images_dir "./data/mscoco/train2017" \
+  --captions_file "./data/mscoco/results_train.csv" \
+  --out_dir "./checkpoints/mscoco_cnn_rnn" \
+  --prefix mscoco_cnn_rnn \
+  --epochs 10 \
+  --batch_size 64 \
+  --device cuda:0
+```
+
+Gợi ý kiểm tra nhanh trước khi train đầy đủ:
+
+- chạy thử `--epochs 1 --batch_size 16 --num_workers 0` để xác nhận ảnh-caption map đúng,
+- nếu thiếu VRAM, giảm `--batch_size`,
+- nếu không có GPU, đổi `--device cpu`.
+
 ### Trường hợp ảnh gốc nằm ở thư mục khác
 
 Bạn có thể giữ `results_train.csv` trong project, nhưng trỏ `--images_dir` đến đường dẫn tuyệt đối ngoài workspace:
@@ -532,6 +572,7 @@ Nếu không truyền các tham số kiến trúc, script sẽ cố gắng đọ
 Script đánh giá:
 
 - [evaluate.py](/c:/Users/Asus/Desktop/clipcap/evaluate.py)
+- [evaluate_all_mscoco_modes.py](/c:/Users/Asus/Desktop/clipcap/evaluate_all_mscoco_modes.py): chạy tuần tự và tổng hợp kết quả cho cả 4 mode trên MSCOCO.
 
 Các metric được hỗ trợ:
 
@@ -584,6 +625,41 @@ Lưu ý:
 
 - repo hiện không đi kèm sẵn file `eval_results.json`,
 - vì vậy phần kết quả định lượng cần được sinh lại bằng `evaluate.py`.
+
+## 3. Đánh giá cả 4 mode với MSCOCO
+
+Script `evaluate_all_mscoco_modes.py` sẽ tự động:
+
+- tìm checkpoint mới nhất cho từng mode,
+- chạy `evaluate.py` cho `cnn_rnn`, `mlp`, `transformer`, `finetune`,
+- lưu file kết quả từng mode và file tổng hợp.
+
+Lệnh mẫu:
+
+```bash
+python evaluate_all_mscoco_modes.py 
+  --data ./data/mscoco/mscoco_clip_ViT-B_32_val.pkl 
+  --images_dir ./data/mscoco/val2017 \
+  --captions_file ./data/mscoco/results_val.csv 
+  --out_dir ./checkpoints/mscoco_eval_all4 
+  --device cuda:0
+```
+
+Nếu không truyền checkpoint cụ thể, script sẽ tự tìm:
+
+- `./checkpoints/mscoco_cnn_rnn/mscoco_cnn_rnn-*.pt` (hoặc `mscoco_cnn_rnn_latest.pt`)
+- `./checkpoints/mscoco_mlp/mscoco_mlp-*.pt` (hoặc `mscoco_mlp_latest.pt`)
+- `./checkpoints/mscoco_transformer_frozen/mscoco_transformer_frozen-*.pt`
+- `./checkpoints/mscoco_transformer_finetune/mscoco_transformer_finetune-*.pt`
+
+Các đầu ra chính trong `--out_dir`:
+
+- `eval_cnn_rnn.json`
+- `eval_mlp.json`
+- `eval_transformer.json`
+- `eval_finetune.json`
+- `eval_summary_all4.json`
+- `eval_summary_all4.csv`
 
 ## Trực quan hóa
 
