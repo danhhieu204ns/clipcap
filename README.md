@@ -639,7 +639,7 @@ Lệnh mẫu:
 ```bash
 python evaluate_all_mscoco_modes.py 
   --data ./data/mscoco/mscoco_clip_ViT-B_32_val.pkl 
-  --images_dir ./data/mscoco/val2017 \
+  --images_dir ./data/mscoco/val2017 
   --captions_file ./data/mscoco/results_val.csv 
   --out_dir ./checkpoints/mscoco_eval_all4 
   --device cuda:0
