@@ -661,6 +661,54 @@ Các đầu ra chính trong `--out_dir`:
 - `eval_summary_all4.json`
 - `eval_summary_all4.csv`
 
+## 4. Đánh giá bằng LLM-as-a-judge (Hugging Face local)
+
+Repo có script mới `evaluate_llm_judge_all.py` để:
+
+- chạy 4 mode (`cnn_rnn`, `mlp`, `transformer`, `finetune`) trên cả Flickr30k và MSCOCO,
+- dùng LLM làm giám khảo chấm 3 tiêu chí (accuracy, completeness, fluency) theo prompt đã định nghĩa,
+- tổng hợp điểm trung bình cho từng mode/dataset.
+
+Yêu cầu thêm (nếu chưa cài):
+
+```bash
+pip install transformers
+pip install bitsandbytes
+```
+
+Gợi ý cho VRAM 12GB: dùng 4-bit để tránh OOM.
+
+Ví dụ chạy (mặc định chạy cả 2 dataset):
+
+```bash
+python evaluate_llm_judge_all.py --model meta-llama/Meta-Llama-3.1-8B-Instruct --hf_load_in_4bit --strict_json --max_samples 0
+```
+
+Chỉ chạy một dataset:
+
+```bash
+python evaluate_llm_judge_all.py --datasets flickr30k --hf_load_in_4bit --strict_json
+```
+
+Các tùy chọn quan trọng:
+
+- `--hf_load_in_4bit` hoặc `--hf_load_in_8bit`: giảm VRAM (cần `bitsandbytes`).
+- `--hf_device cuda:0` hoặc `--hf_device auto`: chọn thiết bị.
+- `--max_samples N`: chạy nhanh trên tập con, `0` nghĩa là toàn bộ.
+- `--force_regen`: chạy lại phần sinh caption và ghi đè `eval_*.json`.
+- `--force_judge`: chấm lại toàn bộ, ghi đè `llm_judge_*.jsonl`.
+
+Đầu ra:
+
+- `./checkpoints/llm_judge/<dataset>/llm_judge_<mode>.jsonl`
+- `./checkpoints/llm_judge/llm_judge_summary.json`
+- `./checkpoints/llm_judge/llm_judge_summary.csv`
+
+Lưu ý:
+
+- Nếu model HF bị gated, cần `huggingface-cli login` trước khi chạy.
+- Model được load 1 lần và tái sử dụng cho toàn bộ vòng chấm.
+
 ## Trực quan hóa
 
 ## 1. Trực quan hóa tổng quát với `visualize_captioning.py`
