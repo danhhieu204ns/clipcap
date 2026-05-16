@@ -1,0 +1,18 @@
+{
+  "model_arch": "cnn_rnn",
+  "caption": "a dog with a tennis racket in his mouth .",
+  "token_ids": [
+    76,
+    2760,
+    10140,
+    76,
+    9124,
+    7105,
+    4539,
+    4332,
+    5745,
+    6,
+    3
+  ],
+  "gradcam_png": "./visualizations\\cnn_rnn_gradcam.png"
+}

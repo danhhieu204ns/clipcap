@@ -28,14 +28,15 @@ MODE_CONFIGS: Dict[str, Dict[str, object]] = {
     "cnn-rnn": {
         "label": "CNN-RNN",
         "model_arch": "cnn_rnn",
-        "checkpoint": "checkpoints/cnn_rnn/flickr30k_cnn_rnn-014.pt",
+        "checkpoint": "checkpoints/mscoco_cnn_rnn/mscoco_cnn_rnn-009.pt",
+        
         "temperature": 1.0,
         "cnn_max_len": 30,
     },
     "mlp": {
         "label": "ClipCap MLP (frozen)",
         "model_arch": "clipcap",
-        "checkpoint": "checkpoints/flickr30k_mlp/flickr30k_mlp-009.pt",
+        "checkpoint": "checkpoints/mscoco_mlp/mscoco_mlp-009.pt",
         "mapping_type": "mlp",
         "only_prefix": True,
         "prefix_length": 10,
@@ -48,7 +49,7 @@ MODE_CONFIGS: Dict[str, Dict[str, object]] = {
     "transformer": {
         "label": "ClipCap Transformer (frozen)",
         "model_arch": "clipcap",
-        "checkpoint": "checkpoints/flickr30k_transformer_frozen/flickr30k_transformer_frozen-009.pt",
+        "checkpoint": "checkpoints/mscoco_transformer_frozen/mscoco_transformer_frozen-009.pt",
         "mapping_type": "transformer",
         "only_prefix": True,
         "prefix_length": 10,
@@ -61,7 +62,7 @@ MODE_CONFIGS: Dict[str, Dict[str, object]] = {
     "finetune": {
         "label": "ClipCap Transformer (fine-tuned)",
         "model_arch": "clipcap",
-        "checkpoint": "checkpoints/flickr30k_transformer_finetune/flickr30k_transformer_finetune-009.pt",
+        "checkpoint": "checkpoints/mscoco_transformer_finetune/mscoco_transformer_finetune-009.pt",
         "mapping_type": "transformer",
         "only_prefix": False,
         "prefix_length": 10,

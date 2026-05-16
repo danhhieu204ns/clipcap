@@ -728,56 +728,56 @@ Các file đầu ra trong `--out_dir`:
 ### CNN-RNN
 
 ```bash
-python visualize_captioning.py \
-  --model_arch cnn_rnn \
-  --image ./Images/img.jpg \
-  --checkpoint ./checkpoints/cnn_rnn/flickr30k_cnn_rnn-014.pt \
-  --out_dir ./visualizations \
+python visualize_captioning.py 
+  --model_arch cnn_rnn 
+  --image ./Images/img.jpg 
+  --checkpoint ./checkpoints/mscoco_cnn_rnn/mscoco_cnn_rnn-009.pt 
+  --out_dir ./visualizations 
   --output_prefix cnn_rnn
 ```
 
 ### ClipCap MLP
 
 ```bash
-python visualize_captioning.py \
-  --model_arch clipcap \
-  --image ./Images/img.jpg \
-  --checkpoint ./checkpoints/flickr30k_mlp/flickr30k_mlp-009.pt \
-  --mapping_type mlp \
-  --only_prefix \
-  --prefix_length 10 \
-  --out_dir ./visualizations \
+python visualize_captioning.py 
+  --model_arch clipcap 
+  --image ./Images/img.jpg 
+  --checkpoint ./checkpoints/mscoco_mlp/mscoco_mlp-009.pt 
+  --mapping_type mlp 
+  --only_prefix 
+  --prefix_length 10 
+  --out_dir ./visualizations 
   --output_prefix clip_mlp
 ```
 
 ### ClipCap Transformer frozen
 
 ```bash
-python visualize_captioning.py \
-  --model_arch clipcap \
-  --image ./Images/img.jpg \
-  --checkpoint ./checkpoints/flickr30k_transformer_frozen/flickr30k_transformer_frozen-009.pt \
-  --mapping_type transformer \
-  --only_prefix \
-  --prefix_length 10 \
-  --prefix_length_clip 10 \
-  --num_layers 8 \
-  --out_dir ./visualizations \
+python visualize_captioning.py 
+  --model_arch clipcap 
+  --image ./Images/img.jpg 
+  --checkpoint ./checkpoints/mscoco_transformer_frozen/mscoco_transformer_frozen-009.pt 
+  --mapping_type transformer 
+  --only_prefix 
+  --prefix_length 10 
+  --prefix_length_clip 10 
+  --num_layers 8 
+  --out_dir ./visualizations 
   --output_prefix clip_transformer_frozen
 ```
 
 ### ClipCap Transformer + fine-tune GPT-2
 
 ```bash
-python visualize_captioning.py \
-  --model_arch clipcap \
-  --image ./Images/img.jpg \
-  --checkpoint ./checkpoints/flickr30k_transformer_finetune/flickr30k_transformer_finetune-009.pt \
-  --mapping_type transformer \
-  --prefix_length 10 \
-  --prefix_length_clip 10 \
-  --num_layers 8 \
-  --out_dir ./visualizations \
+python visualize_captioning.py 
+  --model_arch clipcap 
+  --image ./Images/img.jpg 
+  --checkpoint ./checkpoints/mscoco_transformer_finetune/mscoco_transformer_finetune-009.pt 
+  --mapping_type transformer 
+  --prefix_length 10 
+  --prefix_length_clip 10 
+  --num_layers 8 
+  --out_dir ./visualizations 
   --output_prefix clip_transformer_finetune
 ```
 

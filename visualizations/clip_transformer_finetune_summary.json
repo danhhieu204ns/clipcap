@@ -1,0 +1,24 @@
+{
+  "model_arch": "clipcap",
+  "mapping_type": "transformer",
+  "only_prefix": false,
+  "caption": "A dog is running with a ball in its mouth.",
+  "token_ids": [
+    32,
+    3290,
+    318,
+    2491,
+    351,
+    257,
+    2613,
+    287,
+    663,
+    5422,
+    13
+  ],
+  "clip_model_type": "ViT-B/32",
+  "clip_spatial_text": "A dog is running with a ball in its mouth.",
+  "clip_patch_cam_invert": true,
+  "clip_patch_cam_png": "./visualizations\\clip_transformer_finetune_clip_patch_cam.png",
+  "input_png": "./visualizations\\clip_transformer_finetune_input.png"
+}
