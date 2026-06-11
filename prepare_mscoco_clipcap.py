@@ -3,10 +3,11 @@ import importlib
 import json
 import os
 import pickle
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 from PIL import Image
+from torch.utils.data import DataLoader, Dataset
 
 if importlib.util.find_spec("clip") is not None:
     clip = importlib.import_module("clip")
@@ -97,6 +98,44 @@ def write_split(path: str, rows: List[Row]) -> None:
             f.write(f"{key}\t{caption}\n")
 
 
+class CocoImageDataset(Dataset):
+    def __init__(self, image_ids: List[str], images_dir: str, preprocess) -> None:
+        self.image_ids = image_ids
+        self.images_dir = images_dir
+        self.preprocess = preprocess
+
+    def __len__(self) -> int:
+        return len(self.image_ids)
+
+    def __getitem__(self, index: int) -> Tuple[str, Optional[torch.Tensor]]:
+        image_id = self.image_ids[index]
+        image_path = os.path.join(self.images_dir, image_id)
+        if not os.path.isfile(image_path):
+            return image_id, None
+
+        try:
+            with Image.open(image_path) as image:
+                return image_id, self.preprocess(image.convert("RGB"))
+        except Exception:
+            return image_id, None
+
+
+def _collate_image_batch(items: List[Tuple[str, Optional[torch.Tensor]]]):
+    batch_ids: List[str] = []
+    missing_ids: List[str] = []
+    batch_tensors: List[torch.Tensor] = []
+
+    for image_id, image_tensor in items:
+        if image_tensor is None:
+            missing_ids.append(image_id)
+            continue
+        batch_ids.append(image_id)
+        batch_tensors.append(image_tensor)
+
+    batch = torch.stack(batch_tensors, dim=0) if batch_tensors else None
+    return batch_ids, batch, missing_ids
+
+
 @torch.no_grad()
 def encode_image_ids(
     image_ids: List[str],
@@ -106,46 +145,41 @@ def encode_image_ids(
     device: torch.device,
     batch_size: int,
     split_name: str,
+    num_workers: int,
 ) -> Tuple[torch.Tensor, List[str], List[str]]:
     embeddings: List[torch.Tensor] = []
     kept_ids: List[str] = []
     missing_ids: List[str] = []
 
-    batch_tensors: List[torch.Tensor] = []
-    batch_ids: List[str] = []
+    pin_memory = device.type == "cuda"
+    dataset = CocoImageDataset(image_ids=image_ids, images_dir=images_dir, preprocess=preprocess)
+    loader_kwargs = {
+        "batch_size": batch_size,
+        "shuffle": False,
+        "num_workers": num_workers,
+        "collate_fn": _collate_image_batch,
+        "pin_memory": pin_memory,
+    }
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 2
+    loader = DataLoader(dataset, **loader_kwargs)
 
-    def flush_batch() -> None:
-        nonlocal batch_tensors, batch_ids
-        if not batch_tensors:
-            return
-        batch = torch.stack(batch_tensors, dim=0).to(device)
-        feats = clip_model.encode_image(batch).float().cpu()
-        for image_id, feat in zip(batch_ids, feats):
-            kept_ids.append(image_id)
-            embeddings.append(feat)
-        batch_tensors = []
-        batch_ids = []
+    progress = tqdm(total=len(image_ids), desc=f"Encoding {split_name}", unit="img")
+    try:
+        for batch_ids, batch, batch_missing_ids in loader:
+            missing_ids.extend(batch_missing_ids)
+            progress.update(len(batch_ids) + len(batch_missing_ids))
+            if batch is None:
+                continue
 
-    iterator = tqdm(image_ids, desc=f"Encoding {split_name}", unit="img")
-    for image_id in iterator:
-        image_path = os.path.join(images_dir, image_id)
-        if not os.path.isfile(image_path):
-            missing_ids.append(image_id)
-            continue
-
-        try:
-            image = Image.open(image_path).convert("RGB")
-            image_tensor = preprocess(image)
-        except Exception:
-            missing_ids.append(image_id)
-            continue
-
-        batch_tensors.append(image_tensor)
-        batch_ids.append(image_id)
-        if len(batch_tensors) >= batch_size:
-            flush_batch()
-
-    flush_batch()
+            batch = batch.to(device, non_blocking=pin_memory)
+            feats = clip_model.encode_image(batch).float().cpu()
+            for image_id, feat in zip(batch_ids, feats):
+                kept_ids.append(image_id)
+                embeddings.append(feat)
+    finally:
+        progress.close()
 
     if not embeddings:
         return torch.empty((0, 0), dtype=torch.float32), kept_ids, missing_ids
@@ -203,6 +237,7 @@ def main() -> None:
     parser.add_argument("--clip_model_type", default="ViT-B/32")
     parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--num_workers", type=int, default=8, help="DataLoader workers for image preprocessing")
     parser.add_argument("--train_pkl", default="", help="Output train .pkl path (optional)")
     parser.add_argument("--val_pkl", default="", help="Output val .pkl path (optional)")
     parser.add_argument("--train_split_csv", default="", help="Output train split .csv path (optional)")
@@ -211,6 +246,8 @@ def main() -> None:
 
     if args.batch_size <= 0:
         raise ValueError("batch_size must be > 0")
+    if args.num_workers < 0:
+        raise ValueError("num_workers must be >= 0")
 
     if not os.path.isfile(args.train_annotations):
         raise FileNotFoundError(f"train_annotations not found: {args.train_annotations}")
@@ -257,6 +294,7 @@ def main() -> None:
         device=device,
         batch_size=args.batch_size,
         split_name="train",
+        num_workers=args.num_workers,
     )
     val_embed, val_kept_ids, val_missing_ids = encode_image_ids(
         image_ids=val_data.image_ids,
@@ -266,6 +304,7 @@ def main() -> None:
         device=device,
         batch_size=args.batch_size,
         split_name="val",
+        num_workers=args.num_workers,
     )
 
     if train_embed.numel() == 0:

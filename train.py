@@ -11,7 +11,8 @@ import pickle
 import sys
 import argparse
 import json
-from typing import Tuple, Optional, Union
+import random
+from typing import Dict, Tuple, Optional, Union
 
 CNN_RNN_IMPORT_ERROR = None
 try:
@@ -42,6 +43,25 @@ except ImportError as exc:
 class MappingType(Enum):
     MLP = 'mlp'
     Transformer = 'transformer'
+
+
+def parse_mapping_type(mapping_type: Union[str, MappingType]) -> MappingType:
+    if isinstance(mapping_type, MappingType):
+        return mapping_type
+    return {'mlp': MappingType.MLP, 'transformer': MappingType.Transformer}[mapping_type]
+
+
+def load_torch_state_dict(path: str, map_location: Union[str, torch.device] = 'cpu') -> Dict[str, torch.Tensor]:
+    try:
+        return torch.load(path, map_location=map_location, weights_only=True)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
+def set_global_seed(seed: int) -> None:
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 class ClipCocoDataset(Dataset):
@@ -248,10 +268,13 @@ class ClipCaptionModel(nn.Module):
     def get_dummy_token(self, batch_size: int, device: torch.device) -> torch.Tensor:
         return torch.zeros(batch_size, self.prefix_length, dtype=torch.int64, device=device)
 
+    def project_prefix(self, prefix: torch.Tensor) -> torch.Tensor:
+        return self.clip_project(prefix).view(-1, self.prefix_length, self.gpt_embedding_size)
+
     def forward(self, tokens: torch.Tensor, prefix: torch.Tensor, mask: Optional[torch.Tensor] = None,
                 labels: Optional[torch.Tensor] = None):
         embedding_text = self.gpt.transformer.wte(tokens)
-        prefix_projections = self.clip_project(prefix).view(-1, self.prefix_length, self.gpt_embedding_size)
+        prefix_projections = self.project_prefix(prefix)
         embedding_cat = torch.cat((prefix_projections, embedding_text), dim=1)
         if labels is not None:
             dummy_token = self.get_dummy_token(tokens.shape[0], tokens.device)
@@ -260,14 +283,20 @@ class ClipCaptionModel(nn.Module):
         return out
 
     def __init__(self, prefix_length: int, clip_length: Optional[int] = None, prefix_size: int = 512,
-                 num_layers: int = 8, mapping_type: MappingType = MappingType.MLP):
+                 num_layers: int = 8, mapping_type: MappingType = MappingType.MLP,
+                 decoder_model: str = 'gpt2', mlp_hidden_scale: float = 0.5,
+                 mlp_hidden_dim: Optional[int] = None):
         super(ClipCaptionModel, self).__init__()
         self.prefix_length = prefix_length
-        self.gpt = GPT2LMHeadModel.from_pretrained('gpt2')
+        self.decoder_model = decoder_model
+        self.gpt = GPT2LMHeadModel.from_pretrained(decoder_model)
         self.gpt_embedding_size = self.gpt.transformer.wte.weight.shape[1]
+        mapping_type = parse_mapping_type(mapping_type)
         if mapping_type == MappingType.MLP:
-            self.clip_project = MLP((prefix_size, (self.gpt_embedding_size * prefix_length) // 2,
-                                     self.gpt_embedding_size * prefix_length))
+            output_dim = self.gpt_embedding_size * prefix_length
+            hidden_dim = mlp_hidden_dim if mlp_hidden_dim is not None else int(output_dim * mlp_hidden_scale)
+            hidden_dim = max(1, hidden_dim)
+            self.clip_project = MLP((prefix_size, hidden_dim, output_dim))
         else:
             self.clip_project = TransformerMapper(prefix_size, self.gpt_embedding_size, prefix_length,
                                                                      clip_length, num_layers)
@@ -302,16 +331,109 @@ def load_model(config_path: str, epoch_or_latest: Union[str, int] = '_latest'):
     if type(epoch_or_latest) is int:
         epoch_or_latest = f"-{epoch_or_latest:03d}"
     model_path = os.path.join(args.out_dir, f"{args.prefix}{epoch_or_latest}.pt")
+    mapping_type = parse_mapping_type(getattr(args, 'mapping_type', 'mlp'))
+    decoder_model = getattr(args, 'decoder_model', 'gpt2')
+    mlp_hidden_scale = getattr(args, 'mlp_hidden_scale', 0.5)
+    mlp_hidden_dim = getattr(args, 'mlp_hidden_dim', None)
+    prefix_dim = 640 if getattr(args, 'is_rn', False) else 512
+    model_kwargs = dict(
+        clip_length=getattr(args, 'prefix_length_clip', 10),
+        prefix_size=prefix_dim,
+        num_layers=getattr(args, 'num_layers', 8),
+        mapping_type=mapping_type,
+        decoder_model=decoder_model,
+        mlp_hidden_scale=mlp_hidden_scale,
+        mlp_hidden_dim=mlp_hidden_dim,
+    )
     if args.only_prefix:
-        model = ClipCaptionPrefix(args.prefix_length)
+        model = ClipCaptionPrefix(args.prefix_length, **model_kwargs)
     else:
-        model = ClipCaptionModel(args.prefix_length)
+        model = ClipCaptionModel(args.prefix_length, **model_kwargs)
     if os.path.isfile(model_path):
         print(f"loading model from {model_path}")
-        model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+        model.load_state_dict(load_torch_state_dict(model_path, map_location=torch.device('cpu')))
     else:
         print(f"{model_path} is not exist")
     return model, parser
+
+
+def build_teacher_model(args, device: torch.device) -> Optional[ClipCaptionModel]:
+    teacher_checkpoint = getattr(args, 'distill_teacher_checkpoint', '')
+    logit_weight = getattr(args, 'distill_logit_weight', 0.0)
+    prefix_weight = getattr(args, 'distill_prefix_weight', 0.0)
+    if logit_weight <= 0 and prefix_weight <= 0:
+        return None
+    if not teacher_checkpoint:
+        raise ValueError('--distill_teacher_checkpoint is required when a KD weight is > 0')
+    if not os.path.isfile(teacher_checkpoint):
+        raise FileNotFoundError(f"Teacher checkpoint not found: {teacher_checkpoint}")
+
+    teacher_prefix_length = getattr(args, 'distill_teacher_prefix_length', 0) or args.prefix_length
+    teacher_clip_length = getattr(args, 'distill_teacher_prefix_length_clip', 0) or args.prefix_length_clip
+    prefix_dim = 640 if getattr(args, 'distill_teacher_is_rn', False) else 512
+    teacher_mapping_type = parse_mapping_type(getattr(args, 'distill_teacher_mapping_type', 'transformer'))
+    teacher_kwargs = dict(
+        clip_length=teacher_clip_length,
+        prefix_size=prefix_dim,
+        num_layers=getattr(args, 'distill_teacher_num_layers', 8),
+        mapping_type=teacher_mapping_type,
+        decoder_model=getattr(args, 'distill_teacher_decoder_model', 'gpt2'),
+        mlp_hidden_scale=getattr(args, 'distill_teacher_mlp_hidden_scale', 0.5),
+        mlp_hidden_dim=getattr(args, 'distill_teacher_mlp_hidden_dim', None),
+    )
+    if getattr(args, 'distill_teacher_only_prefix', False):
+        teacher = ClipCaptionPrefix(teacher_prefix_length, **teacher_kwargs)
+    else:
+        teacher = ClipCaptionModel(teacher_prefix_length, **teacher_kwargs)
+
+    teacher.load_state_dict(load_torch_state_dict(teacher_checkpoint, map_location=device))
+    teacher = teacher.to(device)
+    teacher.eval()
+    for param in teacher.parameters():
+        param.requires_grad = False
+    print(f"Loaded teacher checkpoint: {teacher_checkpoint}")
+    return teacher
+
+
+def build_teacher_mask(mask: torch.Tensor, tokens: torch.Tensor, student_prefix_length: int,
+                       teacher_prefix_length: int) -> torch.Tensor:
+    if student_prefix_length == teacher_prefix_length:
+        return mask
+    token_mask = mask[:, student_prefix_length:]
+    teacher_prefix_mask = torch.ones(tokens.shape[0], teacher_prefix_length, device=tokens.device)
+    return torch.cat((teacher_prefix_mask, token_mask), dim=1)
+
+
+def masked_logit_kd_loss(student_logits: torch.Tensor, teacher_logits: torch.Tensor,
+                         tokens: torch.Tensor, temperature: float) -> torch.Tensor:
+    if student_logits.shape != teacher_logits.shape:
+        raise ValueError(
+            f"Logit KD shape mismatch: student={tuple(student_logits.shape)}, "
+            f"teacher={tuple(teacher_logits.shape)}"
+        )
+    token_mask = tokens.ne(0).float()
+    denom = token_mask.sum().clamp_min(1.0)
+    student_log_probs = nnf.log_softmax(student_logits / temperature, dim=-1)
+    teacher_probs = nnf.softmax(teacher_logits / temperature, dim=-1)
+    kd_per_token = nnf.kl_div(student_log_probs, teacher_probs, reduction='none').sum(dim=-1)
+    return (kd_per_token * token_mask).sum() / denom * (temperature ** 2)
+
+
+def prefix_kd_loss(student_prefix: torch.Tensor, teacher_prefix: torch.Tensor, loss_type: str) -> torch.Tensor:
+    if student_prefix.shape != teacher_prefix.shape:
+        raise ValueError(
+            f"Prefix KD shape mismatch: student={tuple(student_prefix.shape)}, "
+            f"teacher={tuple(teacher_prefix.shape)}"
+        )
+    if loss_type == 'mse':
+        return nnf.mse_loss(student_prefix, teacher_prefix)
+    if loss_type == 'cosine':
+        return 1 - nnf.cosine_similarity(student_prefix, teacher_prefix, dim=-1).mean()
+    if loss_type == 'mse_cosine':
+        mse = nnf.mse_loss(student_prefix, teacher_prefix)
+        cosine = 1 - nnf.cosine_similarity(student_prefix, teacher_prefix, dim=-1).mean()
+        return mse + cosine
+    raise ValueError(f"Unsupported prefix KD loss: {loss_type}")
 
 
 def train(dataset: ClipCocoDataset, model: ClipCaptionModel, args,
@@ -324,12 +446,19 @@ def train(dataset: ClipCocoDataset, model: ClipCaptionModel, args,
         os.makedirs(output_dir)
     model = model.to(device)
     model.train()
+    teacher = build_teacher_model(args, device)
+    distill_logit_weight = getattr(args, 'distill_logit_weight', 0.0)
+    distill_prefix_weight = getattr(args, 'distill_prefix_weight', 0.0)
+    distill_temperature = getattr(args, 'distill_temperature', 2.0)
+    distill_prefix_loss_type = getattr(args, 'distill_prefix_loss', 'mse')
+    use_logit_kd = teacher is not None and distill_logit_weight > 0
+    use_prefix_kd = teacher is not None and distill_prefix_weight > 0
     optimizer = AdamW(model.parameters(), lr=lr)
     train_dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
     scheduler = get_linear_schedule_with_warmup(
         optimizer, num_warmup_steps=warmup_steps, num_training_steps=epochs * len(train_dataloader)
     )
-    # save_config(args)
+    save_config(args)
     for epoch in range(epochs):
         print(f">>> Training epoch {epoch}")
         sys.stdout.flush()
@@ -339,12 +468,30 @@ def train(dataset: ClipCocoDataset, model: ClipCaptionModel, args,
             tokens, mask, prefix = tokens.to(device), mask.to(device), prefix.to(device, dtype=torch.float32)
             outputs = model(tokens, prefix, mask)
             logits = outputs.logits[:, dataset.prefix_length - 1: -1]
-            loss = nnf.cross_entropy(logits.reshape(-1, logits.shape[-1]), tokens.flatten(), ignore_index=0)
+            ce_loss = nnf.cross_entropy(logits.reshape(-1, logits.shape[-1]), tokens.flatten(), ignore_index=0)
+            loss = ce_loss
+            postfix = {'loss': loss.item(), 'ce': ce_loss.item()}
+            if teacher is not None:
+                teacher_mask = build_teacher_mask(mask, tokens, model.prefix_length, teacher.prefix_length)
+                with torch.no_grad():
+                    teacher_outputs = teacher(tokens, prefix, teacher_mask)
+                    teacher_logits = teacher_outputs.logits[:, teacher.prefix_length - 1: -1]
+                    teacher_prefix = teacher.project_prefix(prefix) if use_prefix_kd else None
+                if use_logit_kd:
+                    logit_kd = masked_logit_kd_loss(logits, teacher_logits, tokens, distill_temperature)
+                    loss = loss + distill_logit_weight * logit_kd
+                    postfix['logit_kd'] = logit_kd.item()
+                if use_prefix_kd:
+                    student_prefix = model.project_prefix(prefix)
+                    prefix_kd = prefix_kd_loss(student_prefix, teacher_prefix, distill_prefix_loss_type)
+                    loss = loss + distill_prefix_weight * prefix_kd
+                    postfix['prefix_kd'] = prefix_kd.item()
+                postfix['loss'] = loss.item()
             loss.backward()
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
-            progress.set_postfix({"loss": loss.item()})
+            progress.set_postfix(postfix)
             progress.update()
             if (idx + 1) % 10000 == 0:
                 torch.save(
@@ -357,6 +504,10 @@ def train(dataset: ClipCocoDataset, model: ClipCaptionModel, args,
                 model.state_dict(),
                 os.path.join(output_dir, f"{output_prefix}-{epoch:03d}.pt"),
             )
+        torch.save(
+            model.state_dict(),
+            os.path.join(output_dir, f"{output_prefix}_latest.pt"),
+        )
     return model
 
 
@@ -374,6 +525,26 @@ def main():
     parser.add_argument('--only_prefix', dest='only_prefix', action='store_true')
     parser.add_argument('--mapping_type', type=str, default='mlp', help='mlp/transformer')
     parser.add_argument('--num_layers', type=int, default=8)
+    parser.add_argument('--decoder_model', type=str, default='gpt2', help='HuggingFace GPT-2 style LM, e.g. gpt2 or distilgpt2')
+    parser.add_argument('--mlp_hidden_scale', type=float, default=0.5, help='MLP mapper hidden dim as a fraction of prefix output dim')
+    parser.add_argument('--mlp_hidden_dim', type=int, default=None, help='Optional absolute hidden dim for MLP mapper')
+    parser.add_argument('--init_checkpoint', default='', help='Optional checkpoint used to initialize ClipCap weights before training')
+    parser.add_argument('--clipcap_lr', type=float, default=2e-5)
+    parser.add_argument('--warmup_steps', type=int, default=5000)
+    parser.add_argument('--distill_teacher_checkpoint', default='')
+    parser.add_argument('--distill_teacher_mapping_type', type=str, default='transformer', choices=['mlp', 'transformer'])
+    parser.add_argument('--distill_teacher_decoder_model', type=str, default='gpt2')
+    parser.add_argument('--distill_teacher_prefix_length', type=int, default=0)
+    parser.add_argument('--distill_teacher_prefix_length_clip', type=int, default=0)
+    parser.add_argument('--distill_teacher_num_layers', type=int, default=8)
+    parser.add_argument('--distill_teacher_only_prefix', action='store_true')
+    parser.add_argument('--distill_teacher_is_rn', action='store_true')
+    parser.add_argument('--distill_teacher_mlp_hidden_scale', type=float, default=0.5)
+    parser.add_argument('--distill_teacher_mlp_hidden_dim', type=int, default=None)
+    parser.add_argument('--distill_logit_weight', type=float, default=0.0)
+    parser.add_argument('--distill_prefix_weight', type=float, default=0.0)
+    parser.add_argument('--distill_temperature', type=float, default=2.0)
+    parser.add_argument('--distill_prefix_loss', type=str, default='mse', choices=['mse', 'cosine', 'mse_cosine'])
     parser.add_argument('--is_rn', dest='is_rn', action='store_true')
     parser.add_argument('--normalize_prefix', dest='normalize_prefix', action='store_true')
 
@@ -395,20 +566,35 @@ def main():
     args = parser.parse_args()
 
     if args.model_arch == 'clipcap':
+        set_global_seed(args.seed)
         prefix_length = args.prefix_length
-        dataset = ClipCocoDataset(args.data, prefix_length, normalize_prefix=args.normalize_prefix)
+        dataset = ClipCocoDataset(args.data, prefix_length, gpt2_type=args.decoder_model,
+                                  normalize_prefix=args.normalize_prefix)
         prefix_dim = 640 if args.is_rn else 512
-        args.mapping_type = {'mlp': MappingType.MLP, 'transformer': MappingType.Transformer}[args.mapping_type]
+        mapping_type = parse_mapping_type(args.mapping_type)
+        model_kwargs = dict(
+            clip_length=args.prefix_length_clip,
+            prefix_size=prefix_dim,
+            num_layers=args.num_layers,
+            mapping_type=mapping_type,
+            decoder_model=args.decoder_model,
+            mlp_hidden_scale=args.mlp_hidden_scale,
+            mlp_hidden_dim=args.mlp_hidden_dim,
+        )
         if args.only_prefix:
-            model = ClipCaptionPrefix(prefix_length, clip_length=args.prefix_length_clip, prefix_size=prefix_dim,
-                                      num_layers=args.num_layers, mapping_type=args.mapping_type)
+            model = ClipCaptionPrefix(prefix_length, **model_kwargs)
             print("Train only prefix")
         else:
-            model = ClipCaptionModel(prefix_length, clip_length=args.prefix_length_clip, prefix_size=prefix_dim,
-                                      num_layers=args.num_layers, mapping_type=args.mapping_type)
+            model = ClipCaptionModel(prefix_length, **model_kwargs)
             print("Train both prefix and GPT")
             sys.stdout.flush()
-        train(dataset, model, args, lr=2e-5, output_dir=args.out_dir, output_prefix=args.prefix)
+        if args.init_checkpoint:
+            if not os.path.isfile(args.init_checkpoint):
+                raise FileNotFoundError(f"init_checkpoint not found: {args.init_checkpoint}")
+            model.load_state_dict(load_torch_state_dict(args.init_checkpoint, map_location=torch.device('cpu')))
+            print(f"Initialized ClipCap model from: {args.init_checkpoint}")
+        train(dataset, model, args, lr=args.clipcap_lr, warmup_steps=args.warmup_steps,
+              output_dir=args.out_dir, output_prefix=args.prefix)
     else:
         if CNN_RNN_IMPORT_ERROR is not None:
             raise ImportError(

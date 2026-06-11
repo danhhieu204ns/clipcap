@@ -176,6 +176,9 @@ def build_model(args: argparse.Namespace) -> ClipCaptionModel:
             prefix_size=prefix_dim,
             num_layers=args.num_layers,
             mapping_type=mapping_type,
+            decoder_model=args.decoder_model,
+            mlp_hidden_scale=args.mlp_hidden_scale,
+            mlp_hidden_dim=args.mlp_hidden_dim,
         )
     else:
         model = ClipCaptionModel(
@@ -184,6 +187,9 @@ def build_model(args: argparse.Namespace) -> ClipCaptionModel:
             prefix_size=prefix_dim,
             num_layers=args.num_layers,
             mapping_type=mapping_type,
+            decoder_model=args.decoder_model,
+            mlp_hidden_scale=args.mlp_hidden_scale,
+            mlp_hidden_dim=args.mlp_hidden_dim,
         )
 
     device = getattr(args, "device", "cpu")
@@ -214,13 +220,13 @@ def compute_bert_score(references: Dict[str, List[str]], predictions: Dict[str, 
     return {"BERTScore_P": float(P.mean().item()), "BERTScore_R": float(R.mean().item()), "BERTScore_F1": float(F1.mean().item())}
 
 
-def compute_coco_metrics(references: Dict[str, List[str]], predictions: Dict[str, List[str]]) -> Dict[str, float]:
+def compute_coco_metrics(references: Dict[str, List[str]], predictions: Dict[str, List[str]],
+                         include_spice: bool = True) -> Dict[str, float]:
     try:
         from pycocoevalcap.bleu.bleu import Bleu
         from pycocoevalcap.cider.cider import Cider
         from pycocoevalcap.meteor.meteor import Meteor
         from pycocoevalcap.rouge.rouge import Rouge
-        from pycocoevalcap.spice.spice import Spice
     except ImportError as exc:
         raise ImportError(
             "Missing COCO caption eval packages. Install with: "
@@ -249,10 +255,12 @@ def compute_coco_metrics(references: Dict[str, List[str]], predictions: Dict[str
     except Exception:
         pass
         
-    try:
-        scorers.append((Spice(), ["SPICE"]))
-    except Exception as exc:
-        print(f"Warning: failed to initialize SPICE (Java may be missing): {exc}")
+    if include_spice:
+        try:
+            from pycocoevalcap.spice.spice import Spice
+            scorers.append((Spice(), ["SPICE"]))
+        except Exception as exc:
+            print(f"Warning: failed to initialize SPICE (Java may be missing): {exc}")
 
     metrics: Dict[str, float] = {}
     for scorer, method in scorers:
@@ -379,6 +387,9 @@ def main() -> None:
     parser.add_argument("--prefix_length", type=int, default=10)
     parser.add_argument("--prefix_length_clip", type=int, default=10)
     parser.add_argument("--num_layers", type=int, default=8)
+    parser.add_argument("--decoder_model", default="gpt2", help="HuggingFace GPT-2 style LM, e.g. gpt2 or distilgpt2")
+    parser.add_argument("--mlp_hidden_scale", type=float, default=0.5)
+    parser.add_argument("--mlp_hidden_dim", type=int, default=None)
     parser.add_argument("--is_rn", action="store_true")
     parser.add_argument("--normalize_prefix", action="store_true")
     parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
@@ -389,6 +400,8 @@ def main() -> None:
     parser.add_argument("--entry_length", type=int, default=67)
     parser.add_argument("--max_samples", type=int, default=0, help="0 means evaluate all images")
     parser.add_argument("--save_predictions", default="", help="Optional JSON output path")
+    parser.add_argument("--skip_spice", action="store_true", help="Skip SPICE to avoid slow Java-based eval")
+    parser.add_argument("--skip_bert_score", action="store_true", help="Skip BERTScore to speed up eval")
 
     parser.add_argument("--images_dir", default="", help="Image folder (cnn_rnn mode)")
     parser.add_argument("--captions_file", default="", help="Caption token file/csv (cnn_rnn mode)")
@@ -408,7 +421,7 @@ def main() -> None:
         if not args.data:
             raise ValueError("--data is required in clipcap mode")
 
-        tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+        tokenizer = GPT2Tokenizer.from_pretrained(args.decoder_model)
         print("Loading dataset...")
         prefixes, image_ids, references, image_to_embedding = load_eval_data(args.data)
         if args.max_samples > 0:
@@ -426,7 +439,7 @@ def main() -> None:
                 prefix = prefix / prefix.norm(2, dim=-1, keepdim=True)
 
             with torch.no_grad():
-                prefix_embed = model.clip_project(prefix).reshape(1, args.prefix_length, -1)
+                prefix_embed = model.project_prefix(prefix)
 
             if args.decode == "beam":
                 pred_caption = generate_beam(
@@ -496,9 +509,10 @@ def main() -> None:
             predictions[image_id] = [pred_caption]
 
     print("Computing metrics...")
-    metrics = compute_coco_metrics(eval_references, predictions)
-    bert_metrics = compute_bert_score(eval_references, predictions)
-    metrics.update(bert_metrics)
+    metrics = compute_coco_metrics(eval_references, predictions, include_spice=not args.skip_spice)
+    if not args.skip_bert_score:
+        bert_metrics = compute_bert_score(eval_references, predictions)
+        metrics.update(bert_metrics)
 
     print("\n=== Evaluation Results (ClipCap paper metrics) ===")
     metric_order = ["Bleu_1", "Bleu_2", "Bleu_3", "Bleu_4", "METEOR", "ROUGE_L", "CIDEr", "SPICE", "BERTScore_P", "BERTScore_R", "BERTScore_F1"]
